@@ -11,6 +11,6 @@ database_name = "visitor-dashboard-db"
 database_id = "83861cbe-754f-4b0a-a2ab-3c7f4f1a4aba"
 
 [vars]
-ALLOWED_ORIGIN = "https://MrGuy987.github.io"
+ALLOWED_ORIGIN = "https://mrguy987.github.io"
 ADMIN_EMAIL = "2030swang@student.ncc.vic.edu.au"
 SESSION_TTL_SECONDS = "604800"
