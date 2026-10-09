@@ -8,7 +8,7 @@ preview_urls = true
 [[d1_databases]]
 binding = "DB"
 database_name = "visitor-dashboard-db"
-database_id = "REPLACE_WITH_YOUR_DATABASE_ID"
+database_id = "83861cbe-754f-4b0a-a2ab-3c7f4f1a4aba"
 
 [vars]
 ALLOWED_ORIGIN = "https://MrGuy987.github.io"
