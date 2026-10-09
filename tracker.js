@@ -1,88 +1,190 @@
 (() => {
-  const API_BASE = "https://testing.mrguy987.workers.dev";
-  const CONSENT_KEY = "visitorActivityConsent";
-  const SESSION_KEY = "visitorActivitySession";
+  "use strict";
+
+  const API_URL = "https://testing.mrguy987.workers.dev/api/event";
+  const SESSION_KEY = "visitor_dashboard_session";
+  const CONSENT_KEY = "visitor_dashboard_consent";
+
+  let sessionId = null;
+  let consentGranted = false;
 
   function getSessionId() {
-    let id = sessionStorage.getItem(SESSION_KEY);
+    try {
+      let id = sessionStorage.getItem(SESSION_KEY);
 
-    if (!id) {
-      id = crypto.randomUUID();
-      sessionStorage.setItem(SESSION_KEY, id);
+      if (!id) {
+        id = crypto.randomUUID();
+        sessionStorage.setItem(SESSION_KEY, id);
+      }
+
+      return id;
+    } catch {
+      return crypto.randomUUID();
+    }
+  }
+
+  function hasConsent() {
+    try {
+      return localStorage.getItem(CONSENT_KEY) === "accepted";
+    } catch {
+      return false;
+    }
+  }
+
+  function saveConsent(accepted) {
+    try {
+      localStorage.setItem(
+        CONSENT_KEY,
+        accepted ? "accepted" : "declined"
+      );
+    } catch {
+      // Storage may be unavailable in some browser configurations.
     }
 
-    return id;
+    consentGranted = accepted;
+
+    if (accepted) {
+      sessionId = getSessionId();
+      sendEvent("page_view");
+    }
   }
 
   async function sendEvent(type, label = "") {
-    if (localStorage.getItem(CONSENT_KEY) !== "yes") return;
+    if (!consentGranted || !sessionId) return;
+
+    const event = {
+      type,
+      eventType: type,
+      sessionId,
+      page: window.location.pathname,
+      timestamp: new Date().toISOString(),
+      label,
+      consent: true
+    };
 
     try {
-      await fetch(`${API_BASE}/api/event`, {
+      const response = await fetch(API_URL, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          type,
-          sessionId: getSessionId(),
-          page: location.pathname + location.search,
-          timestamp: new Date().toISOString(),
-          label: String(label).slice(0, 80)
-        }),
-        keepalive: true
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(event)
       });
-    } catch {
-      // Tracking failures must not stop the website from working.
+
+      if (!response.ok) {
+        console.error(
+          "Visitor tracking failed:",
+          response.status,
+          await response.text()
+        );
+      }
+    } catch (error) {
+      console.error("Visitor tracking request failed:", error);
     }
   }
 
-  function showConsentBanner() {
-    const banner = document.getElementById("consentBanner");
+  function createConsentBanner() {
+    if (document.getElementById("visitor-consent-banner")) return;
 
-    if (!banner || localStorage.getItem(CONSENT_KEY)) return;
+    const banner = document.createElement("div");
+    banner.id = "visitor-consent-banner";
 
-    banner.hidden = false;
+    Object.assign(banner.style, {
+      position: "fixed",
+      bottom: "16px",
+      left: "16px",
+      right: "16px",
+      zIndex: "999999",
+      maxWidth: "520px",
+      margin: "0 auto",
+      padding: "18px",
+      borderRadius: "12px",
+      background: "#171923",
+      color: "#ffffff",
+      fontFamily: "Arial, sans-serif",
+      fontSize: "14px",
+      lineHeight: "1.5",
+      boxShadow: "0 4px 24px rgba(0,0,0,.35)"
+    });
 
-    document.getElementById("acceptTracking")
-      ?.addEventListener("click", () => {
-        localStorage.setItem(CONSENT_KEY, "yes");
-        banner.hidden = true;
-        sendEvent("page_view");
+    const message = document.createElement("p");
+    message.textContent =
+      "Allow anonymous website activity tracking to help measure page visits. You can decline and still use this website.";
+    message.style.margin = "0 0 14px";
+
+    const buttons = document.createElement("div");
+    Object.assign(buttons.style, {
+      display: "flex",
+      gap: "10px",
+      flexWrap: "wrap"
+    });
+
+    function makeButton(text, background, callback) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = text;
+
+      Object.assign(button.style, {
+        padding: "9px 14px",
+        border: "0",
+        borderRadius: "7px",
+        background,
+        color: "#ffffff",
+        cursor: "pointer",
+        fontSize: "14px"
       });
 
-    document.getElementById("rejectTracking")
-      ?.addEventListener("click", () => {
-        localStorage.setItem(CONSENT_KEY, "no");
-        banner.hidden = true;
-      });
+      button.addEventListener("click", callback);
+      return button;
+    }
+
+    buttons.append(
+      makeButton("Accept", "#3978f6", () => {
+        saveConsent(true);
+        banner.remove();
+      }),
+      makeButton("Decline", "#343846", () => {
+        saveConsent(false);
+        banner.remove();
+      })
+    );
+
+    banner.append(message, buttons);
+    document.body.appendChild(banner);
   }
 
-  document.addEventListener("DOMContentLoaded", showConsentBanner);
+  function initialize() {
+    consentGranted = hasConsent();
 
-  if (localStorage.getItem(CONSENT_KEY) === "yes") {
-    sendEvent("page_view");
-
-    // Heartbeats indicate that an opted-in page is still active.
-    setInterval(() => sendEvent("heartbeat"), 60000);
+    if (consentGranted) {
+      sessionId = getSessionId();
+      sendEvent("page_view");
+    } else {
+      createConsentBanner();
+    }
   }
 
-  document.addEventListener("click", event => {
-    if (localStorage.getItem(CONSENT_KEY) !== "yes") return;
+  // Optional functions for recording additional events.
+  window.visitorTracker = {
+    track(type, label = "") {
+      if (typeof type !== "string" || !type.trim()) return;
+      sendEvent(type, String(label));
+    },
 
-    const element = event.target.closest("a, button, [data-track]");
-    if (!element) return;
+    getConsent() {
+      return consentGranted;
+    },
 
-    // Do not collect clicks inside forms or on the consent controls.
-    if (element.closest("form")) return;
-    if (element.id === "acceptTracking" ||
-        element.id === "rejectTracking") return;
+    withdrawConsent() {
+      saveConsent(false);
+    }
+  };
 
-    const label = (
-      element.getAttribute("data-track") ||
-      element.getAttribute("aria-label") ||
-      element.innerText ||
-      element.tagName
-    ).trim().slice(0, 80);
-
-    sendEvent("click", label);
-  }, true);
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", initialize, {
+      once: true
+    });
+  } else {
+    initialize();
+  }
 })();
