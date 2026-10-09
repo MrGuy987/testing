@@ -1,5 +1,5 @@
 
-name = "visitor-dashboard-api"
+name = "testing"
 main = "worker/worker.js"
 compatibility_date = "2026-10-09"
 workers_dev = true
