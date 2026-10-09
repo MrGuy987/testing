@@ -1,6 +1,6 @@
 (() => {
   // Replace this with your deployed Cloudflare Worker URL.
-  const API_BASE = "https://REPLACE-WITH-YOUR-WORKER.workers.dev";
+  const API_BASE = "https://testing.mrguy987.workers.dev";
 
   const $ = id => document.getElementById(id);
   let adminKey = "";

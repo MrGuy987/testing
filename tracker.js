@@ -1,5 +1,5 @@
 (() => {
-  const API_BASE = "https://REPLACE-WITH-YOUR-WORKER.workers.dev";
+  const API_BASE = "https://testing.mrguy987.workers.dev";
   const CONSENT_KEY = "visitorActivityConsent";
   const SESSION_KEY = "visitorActivitySession";
 
