@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<title>Visitor Dashboard</title>
+<style>
+:root{color-scheme:dark;--bg:#10131b;--panel:#191f2b;--line:#30394b;--text:#eef3ff;--muted:#a7b2c8;--blue:#7aa2f7;--green:#9ece6a;--red:#f7768e}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif}main{width:min(1050px,94vw);margin:40px auto}h1,h2{line-height:1.2}h1{font-size:clamp(1.8rem,4vw,2.7rem)}h2{font-size:1.2rem}.muted{color:var(--muted)}.panel{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:22px;margin:16px 0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px}label{display:block;margin:12px 0 5px;color:var(--muted)}input{width:100%;padding:12px;border-radius:9px;border:1px solid var(--line);background:#0d1118;color:var(--text)}button{cursor:pointer;border:0;border-radius:9px;background:var(--blue);color:#10131b;font-weight:700;padding:11px 15px;margin:8px 8px 0 0}button.secondary{background:#30394b;color:var(--text)}button.danger{background:var(--red)}.notice{border-left:4px solid var(--blue);padding:12px 15px;background:#121a29}.hidden{display:none!important}.status{margin-top:12px;color:var(--muted);overflow-wrap:anywhere}.ok{color:var(--green)}.error{color:var(--red)}.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;min-width:680px}th,td{text-align:left;padding:10px;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--muted);font-weight:600}.pill{display:inline-block;border-radius:20px;padding:2px 9px;background:#26334a}.online{color:var(--green)}.offline{color:var(--muted)}small{color:var(--muted)}a{color:var(--blue)}
+</style>
+</head>
+<body>
+<main>
+  <h1>Visitor Dashboard</h1>
+  <p class="muted">A consent-based visitor telemetry demo. Sign in to continue.</p>
+
+  <section id="auth" class="panel">
+    <h2>Account</h2>
+    <div class="grid">
+      <div>
+        <label for="email">Email address</label><input id="email" type="email" autocomplete="username" maxlength="254">
+        <label for="password">Password (12+ characters for new accounts)</label><input id="password" type="password" autocomplete="current-password" maxlength="128">
+        <button id="login">Sign in</button><button id="signup" class="secondary">Create account</button>
+      </div>
+      <div class="notice">
+        <strong>Collection notice</strong>
+        <p>This site can collect browser/platform information, screen dimensions, language, timezone, the current page and referrer, page activity, and network metadata (a one-way hash of the IP address and country code). The data is used for the connected-visitor dashboard and security. Telemetry starts only after you sign in and explicitly accept. Do not include personal or confidential information in page URLs or click labels.</p>
+        <p>Use the “Privacy / revoke consent” control to stop future telemetry from this browser. This demo does not provide email verification or a self-service deletion workflow; contact the site administrator for account/data deletion. The site operator should publish a retention period and privacy contact before real-world use.</p>
+        <label><input id="consent" type="checkbox" style="width:auto"> I have read this notice and consent to the described collection.</label>
+      </div>
+    </div>
+    <div id="authStatus" class="status" role="status"></div>
+  </section>
+
+  <section id="signedIn" class="panel hidden">
+    <div class="grid">
+      <div><h2>Signed in</h2><p id="who" class="muted"></p></div>
+      <div><h2>Telemetry</h2><p id="telemetryStatus" class="muted">Not enabled</p></div>
+    </div>
+    <button id="startTelemetry">Accept notice and start telemetry</button>
+    <button id="revoke" class="secondary">Privacy / revoke consent</button>
+    <button id="refreshDashboard" class="secondary hidden">Refresh dashboard</button>
+    <button id="logout" class="secondary">Sign out</button>
+    <p id="signedStatus" class="status" role="status"></p>
+  </section>
+
+  <section id="dashboard" class="hidden">
+    <div class="panel">
+      <h2>Connected visitors</h2>
+      <p class="muted">Updated every five seconds. “Connected” means a heartbeat was received within the last 25 seconds; it is an estimate, not proof that someone is actively viewing the page.</p>
+      <p id="counts">Loading…</p>
+      <div class="table-wrap"><table><thead><tr><th>Status</th><th>Account</th><th>Last seen</th><th>Current page</th><th>Browser / platform</th><th>Screen</th><th>Language / timezone</th><th>Network</th></tr></thead><tbody id="visitorRows"></tbody></table></div>
+    </div>
+    <div class="panel"><h2>Recent events</h2><div class="table-wrap"><table><thead><tr><th>Time</th><th>Account</th><th>Event</th><th>Page</th><th>Details</th></tr></thead><tbody id="eventRows"></tbody></table></div></div>
+  </section>
+  <p class="muted"><small>Demo implementation. Configure edge rate limiting and review your privacy/legal obligations before using it with real visitors.</small></p>
+</main>
+<script>
+(() => {
+  "use strict";
+  const API_ORIGIN = "https://REPLACE-WITH-YOUR-WORKER.workers.dev";
+  const $ = id => document.getElementById(id);
+  const state = { token: sessionStorage.getItem("vd_token") || "", user: null, visitorId: sessionStorage.getItem("vd_visitor") || crypto.randomUUID(), consent: localStorage.getItem("vd_consent") === "yes", timer: null, dashboardTimer: null, lastPage: "" };
+  sessionStorage.setItem("vd_visitor", state.visitorId);
+
+  async function api(path, options = {}) {
+    const headers = { "content-type": "application/json", ...(options.headers || {}) };
+    if (state.token) headers.authorization = "Bearer " + state.token;
+    const response = await fetch(API_ORIGIN + path, { ...options, headers, cache: "no-store", body: options.body ? JSON.stringify(options.body) : undefined });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || "Request failed (" + response.status + ")");
+    return data;
+  }
+  function status(id, message, isError = false) {
+    $(id).textContent = message;
+    $(id).className = "status " + (isError ? "error" : "ok");
+  }
+  function showSignedIn(user) {
+    state.user = user;
+    $("auth").classList.add("hidden");
+    $("signedIn").classList.remove("hidden");
+    $("who").textContent = user.email + (user.isAdmin ? " · dashboard administrator" : " · visitor account");
+    $("refreshDashboard").classList.toggle("hidden", !user.isAdmin);
+    $("dashboard").classList.toggle("hidden", !user.isAdmin);
+    $("telemetryStatus").textContent = state.consent ? "Consent enabled on this browser" : "Not enabled";
+    if (user.isAdmin) {
+      loadDashboard().catch(e => status("signedStatus", e.message, true));
+      if (state.dashboardTimer) clearInterval(state.dashboardTimer);
+      state.dashboardTimer = setInterval(() => loadDashboard().catch(() => {}), 5000);
+    }
+  }
+  function showSignedOut() {
+    state.token = ""; state.user = null;
+    sessionStorage.removeItem("vd_token");
+    if (state.timer) clearInterval(state.timer);
+    if (state.dashboardTimer) clearInterval(state.dashboardTimer);
+    state.timer = null; state.dashboardTimer = null;
+    $("auth").classList.remove("hidden"); $("signedIn").classList.add("hidden"); $("dashboard").classList.add("hidden");
+  }
+  async function authenticate(mode) {
+    try {
+      const email = $("email").value.trim();
+      const password = $("password").value;
+      if (mode === "signup" && password.length < 12) throw new Error("Use a password with at least 12 characters.");
+      const data = await api("/api/auth/" + mode, { method: "POST", body: { email, password } });
+      state.token = data.token;
+      sessionStorage.setItem("vd_token", state.token);
+      status("authStatus", mode === "signup" ? "Account created." : "Signed in.");
+      showSignedIn(data.user);
+      if ($("consent").checked) await startTelemetry();
+    } catch (e) { status("authStatus", e.message, true); }
+  }
+  function telemetryPayload(eventType, details) {
+    return {
+      consent: true, visitorSessionId: state.visitorId, eventType,
+      page: location.href, referrer: document.referrer || "",
+      platform: navigator.userAgentData?.platform || navigator.platform || "unknown",
+      screenWidth: screen.width, screenHeight: screen.height, colorDepth: screen.colorDepth,
+      language: navigator.language || "", timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "",
+      details: details || undefined
+    };
+  }
+  async function sendTelemetry(eventType, details) {
+    if (!state.token || !state.consent) return;
+    try { await api("/api/telemetry", { method: "POST", body: telemetryPayload(eventType, details) }); }
+    catch (e) { status("signedStatus", "Telemetry paused: " + e.message, true); }
+  }
+  async function startTelemetry() {
+    if (!$("consent").checked && !state.consent) {
+      status("signedStatus", "Tick the consent checkbox before starting telemetry.", true); return;
+    }
+    state.consent = true;
+    localStorage.setItem("vd_consent", "yes");
+    $("telemetryStatus").textContent = "Consent enabled on this browser";
+    status("signedStatus", "Consent recorded. Telemetry is running.");
+    await sendTelemetry(state.lastPage === location.href ? "heartbeat" : "page_view");
+    state.lastPage = location.href;
+    if (state.timer) clearInterval(state.timer);
+    state.timer = setInterval(() => sendTelemetry("heartbeat"), 10000);
+  }
+  async function revoke() {
+    state.consent = false;
+    localStorage.removeItem("vd_consent");
+    if (state.timer) clearInterval(state.timer);
+    state.timer = null;
+    $("telemetryStatus").textContent = "Consent revoked on this browser";
+    if (state.token) {
+      try { await api("/api/consent/revoke", { method: "POST", body: { visitorSessionId: state.visitorId } }); } catch {}
+    }
+    status("signedStatus", "Consent revoked. This browser will stop sending telemetry.");
+  }
+  function cell(row, text, className) {
+    const td = document.createElement("td"); td.textContent = text == null || text === "" ? "—" : String(text);
+    if (className) td.className = className; row.appendChild(td); return td;
+  }
+  function date(ts) { return ts ? new Date(ts * 1000).toLocaleString() : "—"; }
+  async function loadDashboard() {
+    if (!state.user?.isAdmin) return;
+    const data = await api("/api/dashboard");
+    const connected = data.sessions.filter(s => s.connected).length;
+    $("counts").textContent = `${connected} connected · ${data.sessions.length} sessions seen in the last 24 hours · ${data.events.length} recent events`;
+    const vr = $("visitorRows"); vr.replaceChildren();
+    for (const s of data.sessions) {
+      const tr = document.createElement("tr");
+      cell(tr, s.connected ? "Connected" : "Inactive", s.connected ? "online" : "offline");
+      cell(tr, s.email); cell(tr, date(s.last_seen_at)); cell(tr, s.current_page);
+      cell(tr, [s.user_agent, s.platform].filter(Boolean).join(" · "));
+      cell(tr, s.screen_width && s.screen_height ? `${s.screen_width} × ${s.screen_height} (${s.color_depth || "?"}-bit)` : "—");
+      cell(tr, [s.language, s.timezone].filter(Boolean).join(" · "));
+      cell(tr, [s.country, s.ip_hash ? "IP hash: " + s.ip_hash.slice(0, 12) + "…" : ""].filter(Boolean).join(" · "));
+      vr.appendChild(tr);
+    }
+    const er = $("eventRows"); er.replaceChildren();
+    for (const e of data.events) {
+      const tr = document.createElement("tr");
+      cell(tr, date(e.created_at)); cell(tr, e.email); cell(tr, e.event_type); cell(tr, e.page);
+      let details = "—"; try { if (e.details_json) details = JSON.parse(e.details_json).label || "—"; } catch {}
+      cell(tr, details); er.appendChild(tr);
+    }
+  }
+  $("login").addEventListener("click", () => authenticate("login"));
+  $("signup").addEventListener("click", () => authenticate("signup"));
+  $("startTelemetry").addEventListener("click", startTelemetry);
+  $("revoke").addEventListener("click", revoke);
+  $("refreshDashboard").addEventListener("click", () => loadDashboard().catch(e => status("signedStatus", e.message, true)));
+  $("logout").addEventListener("click", async () => { try { await api("/api/auth/logout", { method: "POST", body: {} }); } catch {} showSignedOut(); });
+  // Only records a generic click event, never the clicked text, form values, or typed content.
+  document.addEventListener("click", e => {
+    if (!state.consent || !state.token || !(e.target instanceof Element)) return;
+    const target = e.target.closest("a,button");
+    if (target && !["login","signup","startTelemetry","revoke","logout","refreshDashboard"].includes(target.id)) {
+      sendTelemetry("click", { label: target.id || target.tagName.toLowerCase() });
+    }
+  });
+  async function init() {
+    if (!state.token) return;
+    try {
+      const data = await api("/api/me");
+      showSignedIn(data.user);
+      if (state.consent) {
+        $("consent").checked = true;
+        await startTelemetry();
+      }
+    } catch { showSignedOut(); }
+  }
+  init();
+})();
+</script>
+</body>
+</html>
