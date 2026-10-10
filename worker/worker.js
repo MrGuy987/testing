@@ -313,73 +313,20 @@ async function handleEvent(request, env) {
 }
 
 async function handleDashboard(request, env) {
-  if (!requireAdmin(request, env)) {
-    return errorResponse(request, 'Unauthorised.', 401);
-  }
+  const supplied = request.headers.get("X-Admin-Key") || "";
 
-  const now = nowSeconds();
-  const cutoff = now - ACTIVE_WINDOW_SECONDS;
-
-  const sessionsResult = await env.DB.prepare(`
-    SELECT
-      vs.*,
-      (
-        SELECT COUNT(*)
-        FROM events e
-        WHERE e.visitor_session_id = vs.id
-          AND e.event_type = 'page_view'
-      ) AS views
-    FROM visitor_sessions vs
-    ORDER BY vs.last_seen_at DESC
-    LIMIT 500
-  `).all();
-
-  const sessions = (sessionsResult.results || []).map(s => ({
-    ...s,
-    active: Number(s.last_seen_at) >= cutoff ? 1 : 0
-  }));
-
-  const eventsResult = await env.DB.prepare(`
-    SELECT *
-    FROM events
-    ORDER BY created_at DESC
-    LIMIT 500
-  `).all();
-
-  const events = eventsResult.results || [];
-
-  const pagesResult = await env.DB.prepare(`
-    SELECT page, COUNT(*) AS views
-    FROM events
-    WHERE event_type = 'page_view'
-    GROUP BY page
-    ORDER BY views DESC
-    LIMIT 20
-  `).all();
-
-  const statsResult = await env.DB.prepare(`
-    SELECT
-      (SELECT COUNT(*) FROM visitor_sessions) AS sessions,
-      (SELECT COUNT(*) FROM events
-        WHERE event_type = 'page_view') AS pageViews,
-      (SELECT COUNT(*) FROM events) AS events,
-      (SELECT COUNT(*) FROM visitor_sessions
-        WHERE last_seen_at >= ?) AS online
-  `).bind(cutoff).first();
-
-  return jsonResponse(request, {
+  return jsonResponse({
     ok: true,
-    updatedAt: Date.now(),
-    stats: {
-      online: Number(statsResult?.online || 0),
-      pageViews: Number(statsResult?.pageViews || 0),
-      sessions: Number(statsResult?.sessions || 0),
-      events: Number(statsResult?.events || 0)
-    },
-    sessions,
-    events,
-    pages: pagesResult.results || []
-  });
+    diagnostics: {
+      adminKeyConfigured: Boolean(env.ADMIN_KEY),
+      headerReceived: supplied.length > 0,
+      keyMatches: Boolean(
+        env.ADMIN_KEY &&
+        supplied &&
+        supplied === env.ADMIN_KEY
+      )
+    }
+  }, 200, request);
 }
 
 async function handleSupportRequest(request, env) {
