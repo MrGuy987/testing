@@ -1,269 +1,466 @@
 
-const MAX_EVENTS = 5000;
-const MAX_BODY_BYTES = 4000;
+const ACTIVE_WINDOW_SECONDS = 120;
+const MAX_REQUEST_BYTES = 16_384;
+const MAX_SESSIONS = 200;
+const MAX_EVENTS = 500;
+
+// Allows cross-origin requests from any website.
+// This does NOT bypass the admin-key check on /api/dashboard.
+function corsHeaders() {
+  return {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers":
+      "Content-Type, X-Admin-Key, Authorization",
+    "Access-Control-Max-Age": "86400",
+    "Vary": "Origin"
+  };
+}
+
+function jsonResponse(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: {
+      ...corsHeaders(),
+      "Content-Type": "application/json",
+      "Cache-Control": "no-store"
+    }
+  });
+}
+
+function errorResponse(message, status) {
+  return jsonResponse({ error: message }, status);
+}
+
+function validString(value, maxLength = 2048) {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= maxLength
+  );
+}
+
+function validPage(page) {
+  return (
+    typeof page === "string" &&
+    page.length > 0 &&
+    page.length <= 2048 &&
+    page.startsWith("/") &&
+    !page.startsWith("//")
+  );
+}
+
+function parseTimestamp(value) {
+  if (typeof value !== "string" && typeof value !== "number") {
+    return null;
+  }
+
+  const milliseconds =
+    typeof value === "number" ? value : Date.parse(value);
+
+  if (!Number.isFinite(milliseconds)) {
+    return null;
+  }
+
+  const seconds = Math.floor(milliseconds / 1000);
+  const now = Math.floor(Date.now() / 1000);
+
+  // Reject timestamps that are implausibly old or in the future.
+  if (seconds < now - 60 * 60 * 24 * 30 || seconds > now + 300) {
+    return null;
+  }
+
+  return seconds;
+}
+
+function makeId() {
+  return crypto.randomUUID();
+}
+
+async function getDashboardUser(db) {
+  return await db
+    .prepare("SELECT id FROM users ORDER BY created_at ASC LIMIT 1")
+    .first();
+}
+
+async function handleHealth(env) {
+  if (!env.DB) {
+    return jsonResponse({
+      ok: true,
+      databaseConfigured: false,
+      visitorSessions: 0
+    });
+  }
+
+  try {
+    const result = await env.DB
+      .prepare("SELECT COUNT(*) AS total FROM visitor_sessions")
+      .first();
+
+    return jsonResponse({
+      ok: true,
+      databaseConfigured: true,
+      visitorSessions: Number(result?.total ?? 0)
+    });
+  } catch (error) {
+    console.error("Health check failed:", error);
+    return errorResponse("Database health check failed.", 500);
+  }
+}
+
+async function handleEvent(request, env) {
+  if (!env.DB) {
+    return errorResponse("Database is not configured.", 503);
+  }
+
+  const contentLength = Number(
+    request.headers.get("Content-Length") || 0
+  );
+
+  if (contentLength > MAX_REQUEST_BYTES) {
+    return errorResponse("Request body is too large.", 413);
+  }
+
+  let body;
+
+  try {
+    const rawBody = await request.text();
+
+    if (rawBody.length > MAX_REQUEST_BYTES) {
+      return errorResponse("Request body is too large.", 413);
+    }
+
+    body = JSON.parse(rawBody);
+  } catch {
+    return errorResponse("Invalid JSON request body.", 400);
+  }
+
+  // The tracker must only submit events after consent.
+  if (body.consent !== true) {
+    return errorResponse("Visitor consent is required.", 400);
+  }
+
+  const sessionId = body.sessionId;
+  const eventType = body.eventType || body.type;
+  const page = body.page;
+  const timestamp = parseTimestamp(body.timestamp);
+
+  if (!validString(sessionId, 100)) {
+    return errorResponse("Invalid sessionId.", 400);
+  }
+
+  if (!validString(eventType, 40)) {
+    return errorResponse("Invalid event type.", 400);
+  }
+
+  const allowedTypes = new Set([
+    "page_view",
+    "click",
+    "heartbeat"
+  ]);
+
+  if (!allowedTypes.has(eventType)) {
+    return errorResponse("Unsupported event type.", 400);
+  }
+
+  if (!validPage(page)) {
+    return errorResponse("Invalid page path.", 400);
+  }
+
+  if (timestamp === null) {
+    return errorResponse("Invalid event timestamp.", 400);
+  }
+
+  const user = await getDashboardUser(env.DB);
+
+  if (!user) {
+    return errorResponse("No dashboard user is registered yet.", 503);
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  const userAgent = (
+    request.headers.get("User-Agent") || ""
+  ).slice(0, 512);
+
+  try {
+    // Prevent a reused session ID from being associated with
+    // a different dashboard user.
+    const existingSession = await env.DB
+      .prepare(
+        "SELECT user_id FROM visitor_sessions WHERE id = ? LIMIT 1"
+      )
+      .bind(sessionId)
+      .first();
+
+    if (existingSession && existingSession.user_id !== user.id) {
+      return errorResponse("Session ID conflict.", 409);
+    }
+
+    if (!existingSession) {
+      const count = await env.DB
+        .prepare(
+          "SELECT COUNT(*) AS total FROM visitor_sessions WHERE user_id = ?"
+        )
+        .bind(user.id)
+        .first();
+
+      if (Number(count?.total ?? 0) >= 10000) {
+        return errorResponse("Visitor session storage limit reached.", 429);
+      }
+    }
+
+    const eventId = makeId();
+
+    const statements = [
+      env.DB.prepare(`
+        INSERT INTO visitor_sessions (
+          id,
+          user_id,
+          started_at,
+          last_seen_at,
+          consent_at,
+          user_agent,
+          current_page,
+          active
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+        ON CONFLICT(id) DO UPDATE SET
+          last_seen_at = excluded.last_seen_at,
+          current_page = excluded.current_page,
+          user_agent = excluded.user_agent,
+          active = 1
+        WHERE visitor_sessions.user_id = excluded.user_id
+      `).bind(
+        sessionId,
+        user.id,
+        now,
+        now,
+        now,
+        userAgent,
+        page
+      )
+    ];
+
+    statements.push(
+      env.DB.prepare(`
+        INSERT INTO events (
+          id,
+          visitor_session_id,
+          user_id,
+          event_type,
+          page,
+          created_at,
+          details_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).bind(
+        eventId,
+        sessionId,
+        user.id,
+        eventType,
+        page,
+        timestamp,
+        JSON.stringify({
+          label: typeof body.label === "string"
+            ? body.label.slice(0, 200)
+            : ""
+        })
+      )
+    );
+
+    await env.DB.batch(statements);
+
+    return jsonResponse({
+      ok: true,
+      recorded: true,
+      eventId
+    }, 201);
+  } catch (error) {
+    console.error("Event recording failed:", error);
+    return errorResponse("Could not record visitor event.", 500);
+  }
+}
+
+async function handleDashboard(request, env) {
+  if (!env.DB) {
+    return errorResponse("Database is not configured.", 503);
+  }
+
+  if (!env.ADMIN_KEY) {
+    return errorResponse("Admin authentication is not configured.", 503);
+  }
+
+  const suppliedKey = request.headers.get("X-Admin-Key");
+
+  if (!suppliedKey || suppliedKey !== env.ADMIN_KEY) {
+    return errorResponse("Invalid or missing admin key.", 401);
+  }
+
+  try {
+    const now = Math.floor(Date.now() / 1000);
+    const activeSince = now - ACTIVE_WINDOW_SECONDS;
+
+    const [sessionResult, eventResult, pageResult, countResult] =
+      await Promise.all([
+        env.DB.prepare(`
+          SELECT
+            vs.id,
+            vs.user_id,
+            vs.started_at,
+            vs.last_seen_at,
+            vs.consent_at,
+            vs.user_agent,
+            vs.platform,
+            vs.screen_width,
+            vs.screen_height,
+            vs.color_depth,
+            vs.language,
+            vs.timezone,
+            vs.current_page,
+            vs.referrer,
+            vs.country,
+            vs.active,
+            COUNT(CASE WHEN e.event_type = 'page_view' THEN 1 END)
+              AS views,
+            COUNT(e.id) AS event_count,
+            CASE
+              WHEN vs.last_seen_at >= ? THEN 1
+              ELSE 0
+            END AS online
+          FROM visitor_sessions vs
+          LEFT JOIN events e ON e.visitor_session_id = vs.id
+          GROUP BY vs.id
+          ORDER BY vs.last_seen_at DESC
+          LIMIT ?
+        `).bind(activeSince, MAX_SESSIONS).all(),
+
+        env.DB.prepare(`
+          SELECT
+            id,
+            visitor_session_id AS session_id,
+            user_id,
+            event_type,
+            page,
+            created_at,
+            details_json
+          FROM events
+          ORDER BY created_at DESC
+          LIMIT ?
+        `).bind(MAX_EVENTS).all(),
+
+        env.DB.prepare(`
+          SELECT
+            page,
+            COUNT(*) AS views
+          FROM events
+          WHERE event_type = 'page_view'
+          GROUP BY page
+          ORDER BY views DESC
+          LIMIT 100
+        `).all(),
+
+        env.DB.prepare(`
+          SELECT
+            (SELECT COUNT(*) FROM visitor_sessions) AS sessions,
+            (SELECT COUNT(*) FROM events) AS events,
+            (
+              SELECT COUNT(*)
+              FROM visitor_sessions
+              WHERE last_seen_at >= ?
+            ) AS online,
+            (
+              SELECT COUNT(*)
+              FROM events
+              WHERE event_type = 'page_view'
+            ) AS pageViews
+        `).bind(activeSince).first()
+      ]);
+
+    const sessions = (sessionResult.results || []).map((row) => ({
+      ...row,
+      views: Number(row.views || 0),
+      event_count: Number(row.event_count || 0),
+      online: Boolean(row.online),
+      status: row.last_seen_at >= activeSince ? "Online" : "Offline"
+    }));
+
+    const events = (eventResult.results || []).map((row) => ({
+      ...row,
+      details: (() => {
+        try {
+          return row.details_json ? JSON.parse(row.details_json) : {};
+        } catch {
+          return {};
+        }
+      })()
+    }));
+
+    const pages = (pageResult.results || []).map((row) => ({
+      page: row.page,
+      views: Number(row.views || 0)
+    }));
+
+    return jsonResponse({
+      ok: true,
+      updatedAt: now,
+      stats: {
+        online: Number(countResult?.online || 0),
+        pageViews: Number(countResult?.pageViews || 0),
+        sessions: Number(countResult?.sessions || 0),
+        events: Number(countResult?.events || 0)
+      },
+      sessions,
+      events,
+      pages
+    });
+  } catch (error) {
+    console.error("Dashboard query failed:", error);
+    return errorResponse("Could not load dashboard data.", 500);
+  }
+}
 
 export default {
   async fetch(request, env) {
-    const origin = request.headers.get("Origin") || "";
-    const allowedOrigin = env.ALLOWED_ORIGIN || "";
-
-    const cors = {
-      "Access-Control-Allow-Origin": allowedOrigin,
-      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type, X-Admin-Key",
-      "Vary": "Origin",
-      "Cache-Control": "no-store"
-    };
-
-    const json = (data, status = 200) =>
-      new Response(JSON.stringify(data), {
-        status,
-        headers: {
-          "Content-Type": "application/json; charset=utf-8",
-          ...cors
-        }
-      });
-
+    // Handle preflight before API route logic.
     if (request.method === "OPTIONS") {
-      if (origin !== allowedOrigin) {
-        return json({ error: "Origin not allowed" }, 403);
-      }
-      return new Response(null, { status: 204, headers: cors });
+      return new Response(null, {
+        status: 204,
+        headers: corsHeaders()
+      });
     }
 
     const url = new URL(request.url);
+    const path = url.pathname;
 
     try {
-      if (url.pathname === "/api/health" && request.method === "GET") {
-        const result = await env.DB
-          .prepare("SELECT COUNT(*) AS count FROM visitor_sessions")
-          .first();
+      if (path === "/api/health" && request.method === "GET") {
+        return await handleHealth(env);
+      }
 
-        return json({
+      if (path === "/api/event" && request.method === "POST") {
+        return await handleEvent(request, env);
+      }
+
+      if (path === "/api/dashboard" && request.method === "GET") {
+        return await handleDashboard(request, env);
+      }
+
+      if (path === "/" && request.method === "GET") {
+        return jsonResponse({
+          name: "Visitor Control Centre API",
           ok: true,
-          databaseConfigured: true,
-          visitorSessions: result.count
+          endpoints: [
+            "/api/health",
+            "/api/event",
+            "/api/dashboard"
+          ]
         });
       }
 
-      if (url.pathname === "/api/event" && request.method === "POST") {
-        if (!allowedOrigin || origin !== allowedOrigin) {
-          return json({ error: "Origin not allowed" }, 403);
-        }
-
-        const length = Number(request.headers.get("Content-Length") || 0);
-        if (length > MAX_BODY_BYTES) {
-          return json({ error: "Request too large" }, 413);
-        }
-
-        const input = await request.json();
-
-        if (JSON.stringify(input).length > MAX_BODY_BYTES) {
-          return json({ error: "Request too large" }, 413);
-        }
-
-        const event = validateEvent(input);
-        if (!event) {
-          return json({ error: "Invalid event or consent missing" }, 400);
-        }
-
-        await appendEvent(env, request, event);
-        return json({ ok: true }, 202);
-      }
-
-      if (url.pathname === "/api/dashboard" && request.method === "GET") {
-        if (
-          !env.ADMIN_KEY ||
-          request.headers.get("X-Admin-Key") !== env.ADMIN_KEY
-        ) {
-          return json({ error: "Invalid admin key" }, 401);
-        }
-
-        return json(await readDashboard(env));
-      }
-
-      return json({ error: "Not found" }, 404);
+      return errorResponse("Endpoint not found.", 404);
     } catch (error) {
-      console.error("Worker error:", error);
-      return json({
-        error: error.publicMessage || "Server error"
-      }, error.status || 500);
+      console.error("Unhandled Worker error:", error);
+      return errorResponse("Internal server error.", 500);
     }
   }
 };
-
-function validateEvent(input) {
-  if (!input || typeof input !== "object" || input.consent !== true) {
-    return null;
-  }
-
-  if (!["page_view", "click", "heartbeat"].includes(input.type)) {
-    return null;
-  }
-
-  const sessionId = String(input.sessionId || "");
-  if (!/^[a-zA-Z0-9_-]{8,80}$/.test(sessionId)) {
-    return null;
-  }
-
-  const page = String(input.page || "/").split("?")[0].slice(0, 250);
-  if (!page.startsWith("/") || page.startsWith("//")) {
-    return null;
-  }
-
-  const timestamp = Date.parse(input.timestamp);
-  if (
-    !Number.isFinite(timestamp) ||
-    Math.abs(Date.now() - timestamp) > 10 * 60 * 1000
-  ) {
-    return null;
-  }
-
-  return {
-    type: input.type,
-    sessionId,
-    page,
-    timestamp: Math.floor(timestamp / 1000),
-    label: input.type === "click"
-      ? String(input.label || "")
-          .replace(/[\r\n\t]/g, " ")
-          .slice(0, 80)
-      : ""
-  };
-}
-
-async function appendEvent(env, request, event) {
-  // Associate visitor records with the first registered dashboard user.
-  const owner = await env.DB
-    .prepare("SELECT id FROM users ORDER BY created_at ASC LIMIT 1")
-    .first();
-
-  if (!owner) {
-    const error = new Error("Create a dashboard user before collecting events.");
-    error.status = 503;
-    error.publicMessage = "No dashboard user is registered yet.";
-    throw error;
-  }
-
-  const userId = owner.id;
-  const platform = getPlatform(request.headers.get("User-Agent") || "");
-  const now = event.timestamp;
-  const details = event.label ? JSON.stringify({ label: event.label }) : null;
-
-  await env.DB.batch([
-    env.DB.prepare(`
-      INSERT INTO visitor_sessions (
-        id, user_id, started_at, last_seen_at, consent_at,
-        platform, current_page, active
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, 1)
-      ON CONFLICT(id) DO UPDATE SET
-        last_seen_at = MAX(visitor_sessions.last_seen_at, excluded.last_seen_at),
-        current_page = excluded.current_page,
-        active = 1
-      WHERE visitor_sessions.user_id = excluded.user_id
-    `).bind(
-      event.sessionId, userId, now, now, now,
-      platform, event.page
-    ),
-
-    env.DB.prepare(`
-      INSERT INTO events (
-        id, visitor_session_id, user_id, event_type,
-        page, created_at, details_json
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).bind(
-      crypto.randomUUID(), event.sessionId, userId,
-      event.type, event.page, now, details
-    )
-  ]);
-
-  if (event.type === "page_view") {
-    await env.DB.prepare(`
-      DELETE FROM events
-      WHERE user_id = ?
-        AND id IN (
-          SELECT id FROM events
-          WHERE user_id = ?
-          ORDER BY created_at DESC, rowid DESC
-          LIMIT -1 OFFSET ?
-        )
-    `).bind(userId, userId, MAX_EVENTS).run();
-  }
-}
-
-function getPlatform(ua) {
-  if (/Android/i.test(ua)) return "Android";
-  if (/iPhone|iPad|iPod/i.test(ua)) return "iOS";
-  if (/CrOS/i.test(ua)) return "ChromeOS";
-  if (/Windows/i.test(ua)) return "Windows";
-  if (/Macintosh|Mac OS/i.test(ua)) return "macOS";
-  if (/Linux/i.test(ua)) return "Linux";
-  return "Other";
-}
-
-async function readDashboard(env) {
-  const owner = await env.DB
-    .prepare("SELECT id FROM users ORDER BY created_at ASC LIMIT 1")
-    .first();
-
-  if (!owner) {
-    return { sessions: {}, events: [], version: 1, updatedAt: new Date().toISOString() };
-  }
-
-  const sessionsResult = await env.DB.prepare(`
-    SELECT
-      s.id, s.current_page, s.started_at, s.last_seen_at,
-      COUNT(CASE WHEN e.event_type = 'page_view' THEN 1 END) AS page_views
-    FROM visitor_sessions s
-    LEFT JOIN events e ON e.visitor_session_id = s.id
-    WHERE s.user_id = ?
-    GROUP BY s.id
-    ORDER BY s.last_seen_at DESC
-  `).bind(owner.id).all();
-
-  const eventsResult = await env.DB.prepare(`
-    SELECT id, visitor_session_id, event_type, page, created_at, details_json
-    FROM events
-    WHERE user_id = ?
-    ORDER BY created_at DESC
-    LIMIT ?
-  `).bind(owner.id, MAX_EVENTS).all();
-
-  const sessions = {};
-
-  for (const s of sessionsResult.results) {
-    sessions[s.id] = {
-      id: s.id,
-      currentPage: s.current_page,
-      firstSeen: new Date(s.started_at * 1000).toISOString(),
-      lastSeen: new Date(s.last_seen_at * 1000).toISOString(),
-      pageViews: s.page_views,
-      active: Date.now() / 1000 - s.last_seen_at < 120
-    };
-  }
-
-  const events = eventsResult.results.map(e => {
-    let label = "";
-    try {
-      label = JSON.parse(e.details_json || "{}").label || "";
-    } catch {}
-
-    return {
-      id: e.id,
-      sessionId: e.visitor_session_id,
-      type: e.event_type,
-      page: e.page,
-      timestamp: new Date(e.created_at * 1000).toISOString(),
-      label
-    };
-  });
-
-  return {
-    sessions,
-    events,
-    version: 1,
-    updatedAt: new Date().toISOString()
-  };
-}
