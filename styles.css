@@ -293,3 +293,19 @@ code {
     padding: 14px;
   }
 }
+
+#remoteCamera {
+  width: 100%;
+  max-height: 320px;
+  object-fit: contain;
+  background: #000;
+  cursor: pointer;
+}
+
+#remoteCamera:fullscreen {
+  width: 100vw;
+  height: 100vh;
+  max-height: none;
+  object-fit: contain;
+  background: #000;
+}

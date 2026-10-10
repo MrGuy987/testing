@@ -24,6 +24,32 @@
 
   const $ = id => document.getElementById(id);
 
+  // Click the visitor's webcam preview to enlarge it.
+  const remoteCamera = $('remoteCamera');
+
+  remoteCamera.style.cursor = 'pointer';
+  remoteCamera.title = 'Click to view fullscreen';
+
+  remoteCamera.addEventListener('click', async () => {
+    if (!remoteCamera.srcObject) {
+      $('supportStatus').textContent =
+        'The visitor is not currently sharing their webcam.';
+      return;
+    }
+
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+      } else {
+        await remoteCamera.requestFullscreen();
+      }
+    } catch (error) {
+      $('supportStatus').textContent =
+        'Could not open fullscreen: ' + error.message;
+    }
+  });
+
+
   const esc = value =>
     String(value ?? '').replace(/[&<>"']/g, c => ({
       '&': '&amp;',
