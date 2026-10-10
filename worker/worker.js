@@ -2,7 +2,23 @@
 'use strict';
 
 const ALLOWED_ORIGINS = [
-  'https://mrguy987.github.io'
+  'https://mrguy987.github.io',
+  'http://localhost',
+  'http://localhost:3000',
+  'http://localhost:4173',
+  'http://localhost:5173',
+  'http://127.0.0.1',
+  'http://127.0.0.1:3000',
+  'http://127.0.0.1:4173',
+  'http://127.0.0.1:5173',
+  'https://localhost',
+  'https://localhost:3000',
+  'https://localhost:4173',
+  'https://localhost:5173',
+  'https://127.0.0.1',
+  'https://127.0.0.1:3000',
+  'https://127.0.0.1:4173',
+  'https://127.0.0.1:5173'
 ];
 
 const ACTIVE_WINDOW_SECONDS = 120;
@@ -313,20 +329,83 @@ async function handleEvent(request, env) {
 }
 
 async function handleDashboard(request, env) {
-  const supplied = request.headers.get("X-Admin-Key") || "";
+  if (!requireAdmin(request, env)) {
+    return errorResponse(request, 'Unauthorised.', 401);
+  }
 
-  return jsonResponse({
+  const now = nowSeconds();
+  const cutoff = now - ACTIVE_WINDOW_SECONDS;
+
+  const [
+    onlineResult,
+    pageViewResult,
+    sessionResult,
+    eventResult,
+    sessionsResult,
+    eventsResult,
+    pagesResult
+  ] = await Promise.all([
+    env.DB.prepare(`
+      SELECT COUNT(*) AS total
+      FROM visitor_sessions
+      WHERE active = 1 AND last_seen_at >= ?
+    `).bind(cutoff).first(),
+    env.DB.prepare(`
+      SELECT COUNT(*) AS total
+      FROM events
+      WHERE event_type = 'page_view'
+    `).first(),
+    env.DB.prepare(`
+      SELECT COUNT(*) AS total
+      FROM visitor_sessions
+    `).first(),
+    env.DB.prepare(`
+      SELECT COUNT(*) AS total
+      FROM events
+    `).first(),
+    env.DB.prepare(`
+      SELECT *
+      FROM visitor_sessions
+      ORDER BY last_seen_at DESC
+      LIMIT 200
+    `).all(),
+    env.DB.prepare(`
+      SELECT *
+      FROM events
+      ORDER BY created_at DESC
+      LIMIT 200
+    `).all(),
+    env.DB.prepare(`
+      SELECT page, COUNT(*) AS views
+      FROM events
+      WHERE event_type = 'page_view'
+      GROUP BY page
+      ORDER BY views DESC, page ASC
+      LIMIT 10
+    `).all()
+  ]);
+
+  const stats = {
+    online: Number(onlineResult?.total || 0),
+    pageViews: Number(pageViewResult?.total || 0),
+    sessions: Number(sessionResult?.total || 0),
+    events: Number(eventResult?.total || 0)
+  };
+
+  return jsonResponse(request, {
     ok: true,
-    diagnostics: {
-      adminKeyConfigured: Boolean(env.ADMIN_KEY),
-      headerReceived: supplied.length > 0,
-      keyMatches: Boolean(
-        env.ADMIN_KEY &&
-        supplied &&
-        supplied === env.ADMIN_KEY
-      )
-    }
-  }, 200, request);
+    updatedAt: Date.now(),
+    stats,
+    sessions: (sessionsResult?.results || []).map(row => ({
+      ...row,
+      pageViews: Number(row.page_views || row.views || 0)
+    })),
+    events: eventsResult?.results || [],
+    pages: (pagesResult?.results || []).map(row => ({
+      page: row.page || '',
+      views: Number(row.views || 0)
+    }))
+  });
 }
 
 async function handleSupportRequest(request, env) {
