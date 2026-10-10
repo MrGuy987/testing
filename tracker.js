@@ -4,8 +4,7 @@
 
   const API_URL = "https://testing.mrguy987.workers.dev/api/event";
   const SESSION_KEY = "visitor_dashboard_session";
-  const CONSENT_KEY = "visitor_dashboard_consent";
-
+const CONSENT_KEY = "visitor_dashboard_consent_v2";
   let sessionId = null;
   let consentGranted = false;
 
