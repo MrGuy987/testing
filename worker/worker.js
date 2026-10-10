@@ -4,8 +4,6 @@ const MAX_REQUEST_BYTES = 16_384;
 const MAX_SESSIONS = 200;
 const MAX_EVENTS = 500;
 
-// Allows cross-origin requests from any website.
-// This does NOT bypass the admin-key check on /api/dashboard.
 function corsHeaders() {
   return {
     "Access-Control-Allow-Origin": "*",
@@ -65,7 +63,6 @@ function parseTimestamp(value) {
   const seconds = Math.floor(milliseconds / 1000);
   const now = Math.floor(Date.now() / 1000);
 
-  // Reject timestamps that are implausibly old or in the future.
   if (seconds < now - 60 * 60 * 24 * 30 || seconds > now + 300) {
     return null;
   }
@@ -75,6 +72,48 @@ function parseTimestamp(value) {
 
 function makeId() {
   return crypto.randomUUID();
+}
+
+function boundedText(value, maxLength) {
+  if (typeof value !== "string") return null;
+
+  const cleaned = value.trim();
+  if (!cleaned || cleaned.length > maxLength) return null;
+
+  return cleaned;
+}
+
+function boundedInteger(value, min, max) {
+  const number = Number(value);
+
+  if (
+    !Number.isInteger(number) ||
+    number < min ||
+    number > max
+  ) {
+    return null;
+  }
+
+  return number;
+}
+
+async function hashIpAddress(request, env) {
+  // Cloudflare supplies this header. Never accept an IP supplied
+  // by the visitor's JavaScript.
+  const ip = request.headers.get("CF-Connecting-IP");
+
+  // Without a secret salt, do not store an IP-derived identifier.
+  if (!ip || !env.IP_HASH_SALT) return null;
+
+  const input = new TextEncoder().encode(
+    `${env.IP_HASH_SALT}:${ip}`
+  );
+
+  const digest = await crypto.subtle.digest("SHA-256", input);
+
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
 }
 
 async function getDashboardUser(db) {
@@ -135,7 +174,10 @@ async function handleEvent(request, env) {
     return errorResponse("Invalid JSON request body.", 400);
   }
 
-  // The tracker must only submit events after consent.
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return errorResponse("Invalid request body.", 400);
+  }
+
   if (body.consent !== true) {
     return errorResponse("Visitor consent is required.", 400);
   }
@@ -149,17 +191,13 @@ async function handleEvent(request, env) {
     return errorResponse("Invalid sessionId.", 400);
   }
 
-  if (!validString(eventType, 40)) {
-    return errorResponse("Invalid event type.", 400);
-  }
-
   const allowedTypes = new Set([
     "page_view",
     "click",
     "heartbeat"
   ]);
 
-  if (!allowedTypes.has(eventType)) {
+  if (!validString(eventType, 40) || !allowedTypes.has(eventType)) {
     return errorResponse("Unsupported event type.", 400);
   }
 
@@ -182,9 +220,32 @@ async function handleEvent(request, env) {
     request.headers.get("User-Agent") || ""
   ).slice(0, 512);
 
+  // Accept only bounded browser-reported values.
+  const platform = boundedText(body.platform, 40);
+  const screenWidth = boundedInteger(body.screenWidth, 1, 100000);
+  const screenHeight = boundedInteger(body.screenHeight, 1, 100000);
+  const colorDepth = boundedInteger(body.colorDepth, 1, 128);
+  const language = boundedText(body.language, 35);
+  const timezone = boundedText(body.timezone, 100);
+  const referrer = boundedText(body.referrer, 512);
+
+  // Country is provided by Cloudflare, not by the visitor's payload.
+  const countryHeader = request.headers.get("CF-IPCountry");
+  const country =
+    countryHeader && /^[A-Z]{2}$/.test(countryHeader)
+      ? countryHeader
+      : null;
+
+  let ipHash = null;
+
   try {
-    // Prevent a reused session ID from being associated with
-    // a different dashboard user.
+    ipHash = await hashIpAddress(request, env);
+  } catch (error) {
+    // Tracking can continue without an IP hash.
+    console.error("IP hashing failed; skipping IP hash.");
+  }
+
+  try {
     const existingSession = await env.DB
       .prepare(
         "SELECT user_id FROM visitor_sessions WHERE id = ? LIMIT 1"
@@ -205,7 +266,10 @@ async function handleEvent(request, env) {
         .first();
 
       if (Number(count?.total ?? 0) >= 10000) {
-        return errorResponse("Visitor session storage limit reached.", 429);
+        return errorResponse(
+          "Visitor session storage limit reached.",
+          429
+        );
       }
     }
 
@@ -220,14 +284,32 @@ async function handleEvent(request, env) {
           last_seen_at,
           consent_at,
           user_agent,
+          platform,
+          screen_width,
+          screen_height,
+          color_depth,
+          language,
+          timezone,
           current_page,
+          referrer,
+          ip_hash,
+          country,
           active
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
         ON CONFLICT(id) DO UPDATE SET
           last_seen_at = excluded.last_seen_at,
-          current_page = excluded.current_page,
           user_agent = excluded.user_agent,
+          platform = COALESCE(excluded.platform, visitor_sessions.platform),
+          screen_width = COALESCE(excluded.screen_width, visitor_sessions.screen_width),
+          screen_height = COALESCE(excluded.screen_height, visitor_sessions.screen_height),
+          color_depth = COALESCE(excluded.color_depth, visitor_sessions.color_depth),
+          language = COALESCE(excluded.language, visitor_sessions.language),
+          timezone = COALESCE(excluded.timezone, visitor_sessions.timezone),
+          current_page = excluded.current_page,
+          referrer = COALESCE(excluded.referrer, visitor_sessions.referrer),
+          ip_hash = COALESCE(excluded.ip_hash, visitor_sessions.ip_hash),
+          country = COALESCE(excluded.country, visitor_sessions.country),
           active = 1
         WHERE visitor_sessions.user_id = excluded.user_id
       `).bind(
@@ -237,11 +319,18 @@ async function handleEvent(request, env) {
         now,
         now,
         userAgent,
-        page
-      )
-    ];
+        platform,
+        screenWidth,
+        screenHeight,
+        colorDepth,
+        language,
+        timezone,
+        page,
+        referrer,
+        ipHash,
+        country
+      ),
 
-    statements.push(
       env.DB.prepare(`
         INSERT INTO events (
           id,
@@ -266,7 +355,7 @@ async function handleEvent(request, env) {
             : ""
         })
       )
-    );
+    ];
 
     await env.DB.batch(statements);
 
@@ -287,7 +376,10 @@ async function handleDashboard(request, env) {
   }
 
   if (!env.ADMIN_KEY) {
-    return errorResponse("Admin authentication is not configured.", 503);
+    return errorResponse(
+      "Admin authentication is not configured.",
+      503
+    );
   }
 
   const suppliedKey = request.headers.get("X-Admin-Key");
@@ -300,81 +392,84 @@ async function handleDashboard(request, env) {
     const now = Math.floor(Date.now() / 1000);
     const activeSince = now - ACTIVE_WINDOW_SECONDS;
 
-    const [sessionResult, eventResult, pageResult, countResult] =
-      await Promise.all([
-        env.DB.prepare(`
-          SELECT
-            vs.id,
-            vs.user_id,
-            vs.started_at,
-            vs.last_seen_at,
-            vs.consent_at,
-            vs.user_agent,
-            vs.platform,
-            vs.screen_width,
-            vs.screen_height,
-            vs.color_depth,
-            vs.language,
-            vs.timezone,
-            vs.current_page,
-            vs.referrer,
-            vs.country,
-            vs.active,
-            COUNT(CASE WHEN e.event_type = 'page_view' THEN 1 END)
-              AS views,
-            COUNT(e.id) AS event_count,
-            CASE
-              WHEN vs.last_seen_at >= ? THEN 1
-              ELSE 0
-            END AS online
-          FROM visitor_sessions vs
-          LEFT JOIN events e ON e.visitor_session_id = vs.id
-          GROUP BY vs.id
-          ORDER BY vs.last_seen_at DESC
-          LIMIT ?
-        `).bind(activeSince, MAX_SESSIONS).all(),
+    const [
+      sessionResult,
+      eventResult,
+      pageResult,
+      countResult
+    ] = await Promise.all([
+      env.DB.prepare(`
+        SELECT
+          vs.id,
+          vs.user_id,
+          vs.started_at,
+          vs.last_seen_at,
+          vs.consent_at,
+          vs.user_agent,
+          vs.platform,
+          vs.screen_width,
+          vs.screen_height,
+          vs.color_depth,
+          vs.language,
+          vs.timezone,
+          vs.current_page,
+          vs.referrer,
+          vs.ip_hash,
+          vs.country,
+          vs.active,
+          COUNT(CASE WHEN e.event_type = 'page_view' THEN 1 END)
+            AS views,
+          COUNT(e.id) AS event_count,
+          CASE
+            WHEN vs.last_seen_at >= ? THEN 1
+            ELSE 0
+          END AS online
+        FROM visitor_sessions vs
+        LEFT JOIN events e ON e.visitor_session_id = vs.id
+        GROUP BY vs.id
+        ORDER BY vs.last_seen_at DESC
+        LIMIT ?
+      `).bind(activeSince, MAX_SESSIONS).all(),
 
-        env.DB.prepare(`
-          SELECT
-            id,
-            visitor_session_id AS session_id,
-            user_id,
-            event_type,
-            page,
-            created_at,
-            details_json
-          FROM events
-          ORDER BY created_at DESC
-          LIMIT ?
-        `).bind(MAX_EVENTS).all(),
+      env.DB.prepare(`
+        SELECT
+          id,
+          visitor_session_id AS session_id,
+          user_id,
+          event_type,
+          page,
+          created_at,
+          details_json
+        FROM events
+        ORDER BY created_at DESC
+        LIMIT ?
+      `).bind(MAX_EVENTS).all(),
 
-        env.DB.prepare(`
-          SELECT
-            page,
-            COUNT(*) AS views
-          FROM events
-          WHERE event_type = 'page_view'
-          GROUP BY page
-          ORDER BY views DESC
-          LIMIT 100
-        `).all(),
+      env.DB.prepare(`
+        SELECT page, COUNT(*) AS views
+        FROM events
+        WHERE event_type = 'page_view'
+        GROUP BY page
+        ORDER BY views DESC
+        LIMIT 100
+      `).all(),
 
-        env.DB.prepare(`
-          SELECT
-            (SELECT COUNT(*) FROM visitor_sessions) AS sessions,
-            (SELECT COUNT(*) FROM events) AS events,
-            (
-              SELECT COUNT(*)
-              FROM visitor_sessions
-              WHERE last_seen_at >= ?
-            ) AS online,
-            (
-              SELECT COUNT(*)
-              FROM events
-              WHERE event_type = 'page_view'
-            ) AS pageViews
-        `).bind(activeSince).first()
-      ]);
+      env.DB.prepare(`
+        SELECT
+          (SELECT COUNT(*) FROM visitor_sessions) AS sessions,
+          (SELECT COUNT(*) FROM events) AS events,
+          (
+            SELECT COUNT(*)
+            FROM visitor_sessions
+            WHERE last_seen_at >= ?
+          ) AS online,
+          (
+            SELECT COUNT(*)
+            FROM events
+            WHERE event_type = 'page_view'
+          ) AS pageViews
+      `).bind(activeSince).first()
+    ]);
 
     const sessions = (sessionResult.results || []).map((row) => ({
       ...row,
@@ -384,16 +479,19 @@ async function handleDashboard(request, env) {
       status: row.last_seen_at >= activeSince ? "Online" : "Offline"
     }));
 
-    const events = (eventResult.results || []).map((row) => ({
-      ...row,
-      details: (() => {
-        try {
-          return row.details_json ? JSON.parse(row.details_json) : {};
-        } catch {
-          return {};
-        }
-      })()
-    }));
+    const events = (eventResult.results || []).map((row) => {
+      let details = {};
+
+      try {
+        details = row.details_json
+          ? JSON.parse(row.details_json)
+          : {};
+      } catch {
+        details = {};
+      }
+
+      return { ...row, details };
+    });
 
     const pages = (pageResult.results || []).map((row) => ({
       page: row.page,
@@ -421,7 +519,6 @@ async function handleDashboard(request, env) {
 
 export default {
   async fetch(request, env) {
-    // Handle preflight before API route logic.
     if (request.method === "OPTIONS") {
       return new Response(null, {
         status: 204,
@@ -430,22 +527,24 @@ export default {
     }
 
     const url = new URL(request.url);
-    const path = url.pathname;
 
     try {
-      if (path === "/api/health" && request.method === "GET") {
+      if (url.pathname === "/api/health" && request.method === "GET") {
         return await handleHealth(env);
       }
 
-      if (path === "/api/event" && request.method === "POST") {
+      if (url.pathname === "/api/event" && request.method === "POST") {
         return await handleEvent(request, env);
       }
 
-      if (path === "/api/dashboard" && request.method === "GET") {
+      if (
+        url.pathname === "/api/dashboard" &&
+        request.method === "GET"
+      ) {
         return await handleDashboard(request, env);
       }
 
-      if (path === "/" && request.method === "GET") {
+      if (url.pathname === "/" && request.method === "GET") {
         return jsonResponse({
           name: "Visitor Control Centre API",
           ok: true,

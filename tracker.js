@@ -1,3 +1,4 @@
+
 (() => {
   "use strict";
 
@@ -31,6 +32,68 @@
     }
   }
 
+  function getPlatform() {
+    const ua = navigator.userAgent || "";
+    const platform = navigator.userAgentData?.platform ||
+      navigator.platform || "";
+
+    if (/CrOS/i.test(ua) || /ChromeOS/i.test(platform)) {
+      return "ChromeOS";
+    }
+
+    if (/Android/i.test(ua)) {
+      return "Android";
+    }
+
+    if (/iPhone|iPad|iPod/i.test(ua) ||
+        (/Mac/i.test(platform) && navigator.maxTouchPoints > 1)) {
+      return "iOS";
+    }
+
+    if (/Win/i.test(platform) || /Windows/i.test(ua)) {
+      return "Windows";
+    }
+
+    if (/Mac/i.test(platform) || /Macintosh/i.test(ua)) {
+      return "macOS";
+    }
+
+    if (/Linux/i.test(platform) || /Linux/i.test(ua)) {
+      return "Linux";
+    }
+
+    return "Other / unknown";
+  }
+
+  function getTimezone() {
+    try {
+      return Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+    } catch {
+      return "";
+    }
+  }
+
+  function getReferrerOrigin() {
+    try {
+      if (!document.referrer) return "";
+      return new URL(document.referrer).origin;
+    } catch {
+      return "";
+    }
+  }
+
+  function getDeviceInfo() {
+    return {
+      platform: getPlatform(),
+      screenWidth: Number(screen.width) || null,
+      screenHeight: Number(screen.height) || null,
+      colorDepth: Number(screen.colorDepth) || null,
+      language: navigator.language || "",
+      timezone: getTimezone(),
+      referrer: getReferrerOrigin()
+    };
+  }
+
   function saveConsent(accepted) {
     try {
       localStorage.setItem(
@@ -38,7 +101,7 @@
         accepted ? "accepted" : "declined"
       );
     } catch {
-      // Storage may be unavailable in some browser configurations.
+      // Storage may be unavailable.
     }
 
     consentGranted = accepted;
@@ -58,8 +121,9 @@
       sessionId,
       page: window.location.pathname,
       timestamp: new Date().toISOString(),
-      label,
-      consent: true
+      label: String(label).slice(0, 200),
+      consent: true,
+      ...getDeviceInfo()
     };
 
     try {
@@ -109,10 +173,11 @@
 
     const message = document.createElement("p");
     message.textContent =
-      "Allow anonymous website activity tracking to help measure page visits. You can decline and still use this website.";
+      "Allow anonymous analytics? If you accept, this site will record page visits, your general operating system, screen dimensions, language and timezone. The server may also store a salted hash of your IP address for analytics. Your raw IP address is not saved in the analytics database. You can decline and still use this website.";
     message.style.margin = "0 0 14px";
 
     const buttons = document.createElement("div");
+
     Object.assign(buttons.style, {
       display: "flex",
       gap: "10px",
@@ -164,10 +229,13 @@
     }
   }
 
-  // Optional functions for recording additional events.
   window.visitorTracker = {
     track(type, label = "") {
       if (typeof type !== "string" || !type.trim()) return;
+
+      const allowedTypes = ["page_view", "click", "heartbeat"];
+      if (!allowedTypes.includes(type)) return;
+
       sendEvent(type, String(label));
     },
 
