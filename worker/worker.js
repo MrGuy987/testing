@@ -191,11 +191,12 @@ async function handleEvent(request, env) {
     return errorResponse("Invalid sessionId.", 400);
   }
 
-  const allowedTypes = new Set([
-    "page_view",
-    "click",
-    "heartbeat"
-  ]);
+const allowedTypes = new Set([
+  "page_view",
+  "click",
+  "heartbeat",
+  "keyboard_interaction"
+]);
 
   if (!validString(eventType, 40) || !allowedTypes.has(eventType)) {
     return errorResponse("Unsupported event type.", 400);
