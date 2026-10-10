@@ -3,7 +3,7 @@ const MAX_REQUEST_BYTES = 32768;
 const MAX_SESSIONS = 10000;
 const MAX_EVENTS = 500;
 const SUPPORT_TTL_SECONDS = 300;
-const ALLOWED_ORIGIN = "https://mrguy987-alt.github.io";
+const ALLOWED_ORIGIN = "https://mrguy987.github.io";
 
 function corsHeaders(request) {
   const origin = request.headers.get("Origin");
