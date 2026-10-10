@@ -14,3 +14,17 @@ database_id = "83861cbe-754f-4b0a-a2ab-3c7f4f1a4aba"
 ALLOWED_ORIGIN = "https://mrguy987.github.io"
 ADMIN_EMAIL = "2030swang@student.ncc.vic.edu.au"
 SESSION_TTL_SECONDS = "604800"
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = true
+persist = true
+
+[observability.traces]
+enabled = false
+head_sampling_rate = 1
+persist = true
+
+[observability.issue_detection]
+enabled = false
