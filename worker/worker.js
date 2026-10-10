@@ -1,813 +1,755 @@
+
+'use strict';
+
+const ALLOWED_ORIGINS = [
+  'https://mrguy987.github.io'
+];
+
 const ACTIVE_WINDOW_SECONDS = 120;
-const MAX_REQUEST_BYTES = 32768;
-const MAX_SESSIONS = 10000;
-const MAX_EVENTS = 500;
 const SUPPORT_TTL_SECONDS = 300;
-const ALLOWED_ORIGIN = "https://mrguy987.github.io";
+const MAX_REQUEST_BYTES = 32768;
+const MAX_EVENTS = 500;
+
+const EVENT_TYPES = new Set([
+  'page_view',
+  'click',
+  'heartbeat',
+  'keyboard_interaction'
+]);
+
+const SIGNAL_TYPES = new Set([
+  'offer',
+  'answer',
+  'ice-candidate'
+]);
+
+const SUPPORT_STATUSES = new Set([
+  'pending',
+  'approved',
+  'connected',
+  'ended',
+  'denied'
+]);
 
 function corsHeaders(request) {
-  const origin = request.headers.get("Origin");
+  const origin = request.headers.get('Origin');
+
   const headers = {
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers":
-      "Content-Type, X-Admin-Key, Authorization",
-    "Access-Control-Max-Age": "86400",
-    "Vary": "Origin"
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Headers':
+      'Content-Type, X-Admin-Key, Authorization',
+    'Access-Control-Max-Age': '86400',
+    'Vary': 'Origin'
   };
 
-  if (origin === ALLOWED_ORIGIN) {
-    headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGIN;
+  if (ALLOWED_ORIGINS.includes(origin)) {
+    headers['Access-Control-Allow-Origin'] = origin;
   }
 
   return headers;
 }
 
-function jsonResponse(data, status = 200, request) {
+function jsonResponse(request, data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
     headers: {
-      "Content-Type": "application/json; charset=utf-8",
-      ...(request ? corsHeaders(request) : {})
+      ...corsHeaders(request),
+      'Content-Type': 'application/json; charset=utf-8',
+      'Cache-Control': 'no-store'
     }
   });
 }
 
-function errorResponse(message, status = 400, request) {
-  return jsonResponse({ ok: false, error: message }, status, request);
+function errorResponse(request, message, status = 400) {
+  return jsonResponse(request, {
+    ok: false,
+    error: message
+  }, status);
 }
 
-function validString(value, max = 200) {
-  return typeof value === "string" &&
-    value.length > 0 &&
-    value.length <= max;
+function optionsResponse(request) {
+  if (!ALLOWED_ORIGINS.includes(request.headers.get('Origin'))) {
+    return new Response(null, { status: 403 });
+  }
+
+  return new Response(null, {
+    status: 204,
+    headers: corsHeaders(request)
+  });
 }
 
-function validPage(value) {
-  return typeof value === "string" &&
-    value.length <= 2048 &&
-    value.startsWith("/");
-}
+async function readJSON(request) {
+  const length = Number(request.headers.get('Content-Length') || 0);
 
-function parseTimestamp(value) {
-  const n = Number(value);
-
-  return Number.isFinite(n) && n > 0
-    ? Math.floor(n)
-    : Math.floor(Date.now() / 1000);
-}
-
-function makeId() {
-  return crypto.randomUUID();
-}
-
-async function readJson(request, limit = MAX_REQUEST_BYTES) {
-  const len = Number(request.headers.get("Content-Length") || 0);
-
-  if (len > limit) {
-    throw new Error("Request body is too large.");
+  if (length > MAX_REQUEST_BYTES) {
+    throw new Error('Request body is too large.');
   }
 
   const text = await request.text();
 
-  if (text.length > limit) {
-    throw new Error("Request body is too large.");
+  if (text.length > MAX_REQUEST_BYTES) {
+    throw new Error('Request body is too large.');
   }
 
   try {
-    return JSON.parse(text);
+    return JSON.parse(text || '{}');
   } catch {
-    throw new Error("Invalid JSON body.");
+    throw new Error('Invalid JSON.');
   }
+}
+
+function nowSeconds() {
+  return Math.floor(Date.now() / 1000);
+}
+
+function randomId() {
+  return crypto.randomUUID();
+}
+
+function randomToken() {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+
+  return Array.from(bytes, b =>
+    b.toString(16).padStart(2, '0')
+  ).join('');
 }
 
 async function sha256(value) {
   const bytes = new TextEncoder().encode(value);
-  const hash = await crypto.subtle.digest("SHA-256", bytes);
+  const hash = await crypto.subtle.digest('SHA-256', bytes);
 
-  return [...new Uint8Array(hash)]
-    .map(x => x.toString(16).padStart(2, "0"))
-    .join("");
+  return Array.from(new Uint8Array(hash), b =>
+    b.toString(16).padStart(2, '0')
+  ).join('');
 }
 
-function adminAuthorized(request, env) {
-  const supplied = request.headers.get("X-Admin-Key") || "";
+async function tokenHash(token) {
+  return sha256(token);
+}
 
+function getBearerToken(request) {
+  const authorization = request.headers.get('Authorization') || '';
+  const match = authorization.match(/^Bearer\s+(.+)$/i);
+
+  return match ? match[1].trim() : '';
+}
+
+function requireAdmin(request, env) {
+  const supplied = request.headers.get('X-Admin-Key');
   return Boolean(
-    env.ADMIN_KEY &&
     supplied &&
+    env.ADMIN_KEY &&
     supplied === env.ADMIN_KEY
   );
 }
 
-function bearer(request) {
-  const value = request.headers.get("Authorization") || "";
-
-  return value.startsWith("Bearer ")
-    ? value.slice(7)
-    : "";
+function requireDatabase(env) {
+  if (!env.DB) {
+    throw new Error('The D1 binding named DB is missing.');
+  }
 }
 
-async function supportAuth(request, env, supportId) {
-  if (adminAuthorized(request, env)) {
-    const adminRow = await env.DB.prepare(
-      `SELECT id, status, expires_at
-       FROM support_sessions
-       WHERE id = ?
-       LIMIT 1`
-    ).bind(supportId).first();
-
-    return adminRow
-      ? { role: "admin", row: adminRow }
-      : null;
-  }
-
-  const token = bearer(request);
-
-  if (!token || !validString(supportId, 100)) {
-    return null;
-  }
-
-  const tokenHash = await sha256(token);
-
-  const row = await env.DB.prepare(
-    `SELECT id, status, expires_at
-     FROM support_sessions
-     WHERE id = ?
-       AND visitor_token_hash = ?
-     LIMIT 1`
-  ).bind(supportId, tokenHash).first();
-
-  if (
-    !row ||
-    row.expires_at < Math.floor(Date.now() / 1000)
-  ) {
-    return null;
-  }
-
-  return { role: "visitor", row };
+function validString(value, maxLength = 2048) {
+  return typeof value === 'string' &&
+    value.length > 0 &&
+    value.length <= maxLength;
 }
 
-function originAllowed(request) {
-  const origin = request.headers.get("Origin");
+async function getFirstUserId(env) {
+  const result = await env.DB
+    .prepare('SELECT id FROM users ORDER BY created_at ASC LIMIT 1')
+    .first();
 
-  return !origin || origin === ALLOWED_ORIGIN;
+  return result?.id || null;
+}
+
+async function getVisitorSession(env, sessionId) {
+  return env.DB
+    .prepare('SELECT * FROM visitor_sessions WHERE id = ?')
+    .bind(sessionId)
+    .first();
 }
 
 async function handleHealth(request, env) {
-  if (!env.DB) {
-    return errorResponse(
-      "Database binding DB is missing.",
-      500,
-      request
-    );
-  }
+  requireDatabase(env);
 
-  const row = await env.DB.prepare(
-    "SELECT COUNT(*) AS total FROM visitor_sessions"
-  ).first();
-
-  return jsonResponse({
+  return jsonResponse(request, {
     ok: true,
-    sessions: Number(row?.total || 0),
-    time: Date.now()
-  }, 200, request);
+    service: 'visitor-dashboard-api',
+    databaseConfigured: true,
+    timestamp: new Date().toISOString()
+  });
 }
 
 async function handleEvent(request, env) {
-  if (!env.DB) {
-    return errorResponse(
-      "Database binding DB is missing.",
-      500,
-      request
-    );
-  }
-
-  let body;
-
-  try {
-    body = await readJson(request, 16384);
-  } catch (e) {
-    return errorResponse(e.message, 413, request);
-  }
+  const body = await readJSON(request);
 
   if (body.consent !== true) {
-    return errorResponse("Consent is required.", 403, request);
-  }
-
-  if (!validString(body.sessionId, 100)) {
-    return errorResponse("Invalid sessionId.", 400, request);
-  }
-
-  const allowedTypes = new Set([
-    "page_view",
-    "click",
-    "heartbeat",
-    "keyboard_interaction"
-  ]);
-
-  if (!allowedTypes.has(body.eventType)) {
-    return errorResponse("Invalid eventType.", 400, request);
-  }
-
-  if (!validPage(body.page)) {
-    return errorResponse("Invalid page.", 400, request);
-  }
-
-  const now = parseTimestamp(body.timestamp);
-
-  const user = await env.DB.prepare(
-    "SELECT id FROM users ORDER BY created_at ASC LIMIT 1"
-  ).first();
-
-  if (!user) {
     return errorResponse(
-      "No dashboard user exists yet.",
-      500,
-      request
+      request,
+      'Explicit visitor consent is required.',
+      403
     );
   }
 
-  const existing = await env.DB.prepare(
-    "SELECT id FROM visitor_sessions WHERE id = ? LIMIT 1"
-  ).bind(body.sessionId).first();
+  const eventType = body.eventType || body.event_type;
+
+  if (!EVENT_TYPES.has(eventType)) {
+    return errorResponse(request, 'Invalid event type.');
+  }
+
+  let sessionId = body.sessionId || body.session_id;
+
+  if (!validString(sessionId, 128)) {
+    sessionId = randomId();
+  }
+
+  const page = typeof body.page === 'string'
+    ? body.page.slice(0, 2048)
+    : '';
+
+  const metadata = body.metadata &&
+    typeof body.metadata === 'object'
+    ? body.metadata
+    : body;
+
+  const userId = await getFirstUserId(env);
+
+  if (!userId) {
+    return errorResponse(
+      request,
+      'No user exists in the users table. Create an account first.',
+      500
+    );
+  }
+
+  const now = nowSeconds();
+
+  const existing = await getVisitorSession(env, sessionId);
+
+  if (existing && existing.user_id !== userId) {
+    return errorResponse(request, 'Invalid visitor session.', 403);
+  }
 
   if (!existing) {
-    const count = await env.DB.prepare(
-      "SELECT COUNT(*) AS total FROM visitor_sessions"
-    ).first();
+    const ip = request.headers.get('CF-Connecting-IP') || '';
+    let ipHash = null;
 
-    if (Number(count?.total || 0) >= MAX_SESSIONS) {
-      return errorResponse(
-        "Session storage limit reached.",
-        429,
-        request
-      );
+    if (ip && env.IP_HASH_SALT) {
+      ipHash = await sha256(env.IP_HASH_SALT + ':' + ip);
     }
 
-    const meta =
-      body.metadata && typeof body.metadata === "object"
-        ? body.metadata
-        : body;
+    const cf = request.cf || {};
 
-    const rawIp = request.headers.get("CF-Connecting-IP") || "";
-
-    const ipHash = rawIp
-      ? await sha256(
-          String(env.IP_HASH_SALT || "visitor-dashboard") +
-          "|" +
-          rawIp
-        )
-      : null;
-
-    const country =
-      request.cf && request.cf.country
-        ? String(request.cf.country).slice(0, 8)
-        : null;
-
-    await env.DB.prepare(
-      `INSERT INTO visitor_sessions
-      (
+    await env.DB.prepare(`
+      INSERT INTO visitor_sessions (
         id, user_id, started_at, last_seen_at, consent_at,
         user_agent, platform, screen_width, screen_height,
         color_depth, language, timezone, current_page,
         referrer, ip_hash, country, active
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`
-    ).bind(
-      body.sessionId,
-      user.id,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+    `).bind(
+      sessionId,
+      userId,
       now,
       now,
       now,
-      String(meta.userAgent || "").slice(0, 500),
-      String(meta.platform || "").slice(0, 100),
-      Number(meta.screenWidth) || null,
-      Number(meta.screenHeight) || null,
-      Number(meta.colorDepth) || null,
-      String(meta.language || "").slice(0, 100),
-      String(meta.timezone || "").slice(0, 100),
-      body.page,
-      String(meta.referrer || "").slice(0, 2048),
+      (request.headers.get('User-Agent') || '').slice(0, 1000),
+      String(metadata.platform || '').slice(0, 128),
+      Number(metadata.screenWidth || metadata.screen_width) || null,
+      Number(metadata.screenHeight || metadata.screen_height) || null,
+      Number(metadata.colorDepth || metadata.color_depth) || null,
+      String(metadata.language || '').slice(0, 128),
+      String(metadata.timezone || '').slice(0, 128),
+      page,
+      String(metadata.referrer || '').slice(0, 2048),
       ipHash,
-      country
+      String(cf.country || '').slice(0, 8)
     ).run();
   } else {
-    await env.DB.prepare(
-      `UPDATE visitor_sessions
-       SET last_seen_at = ?, current_page = ?, active = 1
-       WHERE id = ?`
-    ).bind(now, body.page, body.sessionId).run();
+    await env.DB.prepare(`
+      UPDATE visitor_sessions
+      SET last_seen_at = ?,
+          current_page = ?,
+          active = 1
+      WHERE id = ?
+    `).bind(now, page, sessionId).run();
   }
 
-  const eventId = makeId();
+  const eventId = randomId();
 
-  const details = {
-    label: validString(body.label, 300)
-      ? body.label
-      : ""
-  };
-
-  await env.DB.prepare(
-    `INSERT INTO events
-    (
+  await env.DB.prepare(`
+    INSERT INTO events (
       id, visitor_session_id, user_id,
       event_type, page, created_at, details_json
-    )
-    VALUES (?, ?, ?, ?, ?, ?, ?)`
-  ).bind(
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).bind(
     eventId,
-    body.sessionId,
-    user.id,
-    body.eventType,
-    body.page,
+    sessionId,
+    userId,
+    eventType,
+    page,
     now,
-    JSON.stringify(details)
+    JSON.stringify(body.details || {})
   ).run();
 
-  await env.DB.prepare(
-    `DELETE FROM events
-     WHERE id IN (
-       SELECT id FROM events
-       ORDER BY created_at DESC
-       LIMIT -1 OFFSET ?
-     )`
-  ).bind(MAX_EVENTS * 100).run();
+  // Keep event storage bounded.
+  if (eventType === 'page_view') {
+    await env.DB.prepare(`
+      DELETE FROM events
+      WHERE id IN (
+        SELECT id FROM events
+        ORDER BY created_at DESC
+        LIMIT -1 OFFSET ?
+      )
+    `).bind(MAX_EVENTS * 100).run();
+  }
 
-  return jsonResponse({
+  return jsonResponse(request, {
     ok: true,
-    recorded: true,
+    sessionId,
     eventId
-  }, 200, request);
+  });
 }
 
 async function handleDashboard(request, env) {
-  if (!adminAuthorized(request, env)) {
-    return errorResponse("Unauthorised.", 401, request);
+  if (!requireAdmin(request, env)) {
+    return errorResponse(request, 'Unauthorised.', 401);
   }
 
-  const now = Math.floor(Date.now() / 1000);
+  const now = nowSeconds();
+  const cutoff = now - ACTIVE_WINDOW_SECONDS;
 
-  await env.DB.prepare(
-    `UPDATE visitor_sessions
-     SET active = 0
-     WHERE last_seen_at < ?`
-  ).bind(now - ACTIVE_WINDOW_SECONDS).run();
-
-  const sessionsResult = await env.DB.prepare(
-    `SELECT
-      s.id,
-      s.started_at,
-      s.last_seen_at,
-      s.current_page,
-      s.platform,
-      s.screen_width,
-      s.screen_height,
-      s.color_depth,
-      s.language,
-      s.timezone,
-      s.country,
-      s.ip_hash,
-      s.active,
+  const sessionsResult = await env.DB.prepare(`
+    SELECT
+      vs.*,
       (
         SELECT COUNT(*)
         FROM events e
-        WHERE e.visitor_session_id = s.id
+        WHERE e.visitor_session_id = vs.id
           AND e.event_type = 'page_view'
       ) AS views
-     FROM visitor_sessions s
-     ORDER BY s.last_seen_at DESC
-     LIMIT 200`
-  ).all();
-
-  const eventsResult = await env.DB.prepare(
-    `SELECT
-      id,
-      visitor_session_id,
-      event_type,
-      page,
-      created_at,
-      details_json
-     FROM events
-     ORDER BY created_at DESC
-     LIMIT 500`
-  ).all();
-
-  const pagesResult = await env.DB.prepare(
-    `SELECT page, COUNT(*) AS views
-     FROM events
-     WHERE event_type = 'page_view'
-     GROUP BY page
-     ORDER BY views DESC
-     LIMIT 20`
-  ).all();
-
-  const totalSessions = await env.DB.prepare(
-    "SELECT COUNT(*) AS n FROM visitor_sessions"
-  ).first();
-
-  const totalEvents = await env.DB.prepare(
-    "SELECT COUNT(*) AS n FROM events"
-  ).first();
-
-  const totalViews = await env.DB.prepare(
-    "SELECT COUNT(*) AS n FROM events WHERE event_type = 'page_view'"
-  ).first();
+    FROM visitor_sessions vs
+    ORDER BY vs.last_seen_at DESC
+    LIMIT 500
+  `).all();
 
   const sessions = (sessionsResult.results || []).map(s => ({
     ...s,
-    online:
-      Number(s.active) === 1 &&
-      now - Number(s.last_seen_at) <= ACTIVE_WINDOW_SECONDS
+    active: Number(s.last_seen_at) >= cutoff ? 1 : 0
   }));
 
-  const events = (eventsResult.results || []).map(e => {
-    let details = {};
+  const eventsResult = await env.DB.prepare(`
+    SELECT *
+    FROM events
+    ORDER BY created_at DESC
+    LIMIT 500
+  `).all();
 
-    try {
-      details = JSON.parse(e.details_json || "{}");
-    } catch {}
+  const events = eventsResult.results || [];
 
-    return {
-      ...e,
-      sessionId: e.visitor_session_id,
-      eventType: e.event_type,
-      timestamp: e.created_at,
-      details,
-      label: details.label || ""
-    };
-  });
+  const pagesResult = await env.DB.prepare(`
+    SELECT page, COUNT(*) AS views
+    FROM events
+    WHERE event_type = 'page_view'
+    GROUP BY page
+    ORDER BY views DESC
+    LIMIT 20
+  `).all();
 
-  return jsonResponse({
+  const statsResult = await env.DB.prepare(`
+    SELECT
+      (SELECT COUNT(*) FROM visitor_sessions) AS sessions,
+      (SELECT COUNT(*) FROM events
+        WHERE event_type = 'page_view') AS pageViews,
+      (SELECT COUNT(*) FROM events) AS events,
+      (SELECT COUNT(*) FROM visitor_sessions
+        WHERE last_seen_at >= ?) AS online
+  `).bind(cutoff).first();
+
+  return jsonResponse(request, {
     ok: true,
-    updatedAt: now,
+    updatedAt: Date.now(),
     stats: {
-      online: sessions.filter(s => s.online).length,
-      pageViews: Number(totalViews?.n || 0),
-      sessions: Number(totalSessions?.n || 0),
-      events: Number(totalEvents?.n || 0)
+      online: Number(statsResult?.online || 0),
+      pageViews: Number(statsResult?.pageViews || 0),
+      sessions: Number(statsResult?.sessions || 0),
+      events: Number(statsResult?.events || 0)
     },
     sessions,
     events,
     pages: pagesResult.results || []
-  }, 200, request);
+  });
 }
 
 async function handleSupportRequest(request, env) {
-  if (!adminAuthorized(request, env)) {
-    return errorResponse("Unauthorised.", 401, request);
+  if (!requireAdmin(request, env)) {
+    return errorResponse(request, 'Unauthorised.', 401);
   }
 
-  let body;
+  const body = await readJSON(request);
+  const visitorSessionId = body.visitorSessionId;
 
-  try {
-    body = await readJson(request, 4096);
-  } catch (e) {
-    return errorResponse(e.message, 413, request);
+  if (!validString(visitorSessionId, 128)) {
+    return errorResponse(request, 'Invalid visitor session ID.');
   }
 
-  if (!validString(body.visitorSessionId, 100)) {
-    return errorResponse(
-      "Invalid visitor session ID.",
-      400,
-      request
-    );
-  }
-
-  const visitor = await env.DB.prepare(
-    "SELECT id FROM visitor_sessions WHERE id = ? LIMIT 1"
-  ).bind(body.visitorSessionId).first();
+  const visitor = await getVisitorSession(env, visitorSessionId);
 
   if (!visitor) {
-    return errorResponse(
-      "That visitor session no longer exists.",
-      404,
-      request
-    );
+    return errorResponse(request, 'Visitor session not found.', 404);
   }
 
-  const now = Math.floor(Date.now() / 1000);
-  const id = makeId();
+  const now = nowSeconds();
 
-  await env.DB.prepare(
-    `UPDATE support_sessions
-     SET status = 'ended', updated_at = ?
-     WHERE visitor_session_id = ?
-       AND status IN ('pending', 'approved', 'connected')`
-  ).bind(now, body.visitorSessionId).run();
+  // End previous active requests for this visitor.
+  await env.DB.prepare(`
+    UPDATE support_sessions
+    SET status = 'ended', updated_at = ?
+    WHERE visitor_session_id = ?
+      AND status IN ('pending', 'approved', 'connected')
+  `).bind(now, visitorSessionId).run();
 
-  await env.DB.prepare(
-    `INSERT INTO support_sessions
-    (
-      id, visitor_session_id, status, visitor_token_hash,
-      created_at, updated_at, expires_at
-    )
-    VALUES (?, ?, 'pending', NULL, ?, ?, ?)`
-  ).bind(
-    id,
-    body.visitorSessionId,
+  const supportId = randomId();
+
+  await env.DB.prepare(`
+    INSERT INTO support_sessions (
+      id, visitor_session_id, status,
+      visitor_token_hash, created_at, updated_at, expires_at
+    ) VALUES (?, ?, 'pending', NULL, ?, ?, ?)
+  `).bind(
+    supportId,
+    visitorSessionId,
     now,
     now,
     now + SUPPORT_TTL_SECONDS
   ).run();
 
-  return jsonResponse({
+  return jsonResponse(request, {
     ok: true,
-    supportId: id,
-    status: "pending",
+    supportId,
+    status: 'pending',
     expiresAt: now + SUPPORT_TTL_SECONDS
-  }, 200, request);
+  });
+}
+
+async function getSupportSession(env, supportId) {
+  return env.DB.prepare(`
+    SELECT * FROM support_sessions WHERE id = ?
+  `).bind(supportId).first();
+}
+
+async function visitorOwnsSupport(request, support, body = {}) {
+  const token =
+    getBearerToken(request) ||
+    (typeof body.token === 'string' ? body.token : '');
+
+  if (!token || !support.visitor_token_hash) return false;
+
+  const hash = await tokenHash(token);
+
+  return hash === support.visitor_token_hash;
 }
 
 async function handleSupportPending(request, env) {
-  const sessionId =
-    new URL(request.url).searchParams.get("sessionId") || "";
+  const url = new URL(request.url);
+  const sessionId = url.searchParams.get('sessionId');
 
-  if (!validString(sessionId, 100)) {
-    return errorResponse(
-      "Invalid visitor session ID.",
-      400,
-      request
-    );
+  if (!validString(sessionId, 128)) {
+    return errorResponse(request, 'Missing visitor session ID.');
   }
 
-  const now = Math.floor(Date.now() / 1000);
+  const visitor = await getVisitorSession(env, sessionId);
 
-  const row = await env.DB.prepare(
-    `SELECT id, status, visitor_token_hash, expires_at, created_at
-     FROM support_sessions
-     WHERE visitor_session_id = ?
-       AND status = 'pending'
-       AND expires_at >= ?
-     ORDER BY created_at DESC
-     LIMIT 1`
-  ).bind(sessionId, now).first();
-
-  if (!row) {
-    return jsonResponse({
+  if (!visitor) {
+    return jsonResponse(request, {
       ok: true,
-      requestPending: false
-    }, 200, request);
+      pending: false
+    });
   }
 
-  if (row.visitor_token_hash) {
-    return jsonResponse({
+  const now = nowSeconds();
+
+  await env.DB.prepare(`
+    UPDATE support_sessions
+    SET status = 'ended', updated_at = ?
+    WHERE visitor_session_id = ?
+      AND expires_at <= ?
+      AND status IN ('pending', 'approved', 'connected')
+  `).bind(now, sessionId, now).run();
+
+  const support = await env.DB.prepare(`
+    SELECT *
+    FROM support_sessions
+    WHERE visitor_session_id = ?
+      AND status = 'pending'
+      AND expires_at > ?
+    ORDER BY created_at DESC
+    LIMIT 1
+  `).bind(sessionId, now).first();
+
+  if (!support) {
+    return jsonResponse(request, {
       ok: true,
-      requestPending: true,
-      supportId: row.id,
-      claimed: true
-    }, 200, request);
+      pending: false
+    });
   }
 
-  const token = makeId() + makeId();
-  const hash = await sha256(token);
-
-  const result = await env.DB.prepare(
-    `UPDATE support_sessions
-     SET visitor_token_hash = ?, updated_at = ?
-     WHERE id = ?
-       AND visitor_token_hash IS NULL
-       AND status = 'pending'`
-  ).bind(hash, now, row.id).run();
-
-  if (
-    !result.meta ||
-    Number(result.meta.changes || 0) !== 1
-  ) {
-    return jsonResponse({
+  // Reuse the same token after the first claim, when possible.
+  // The original token cannot be recovered from its hash, so a
+  // claimed request is not offered to another page.
+  if (support.visitor_token_hash) {
+    return jsonResponse(request, {
       ok: true,
-      requestPending: true,
-      supportId: row.id,
-      claimed: true
-    }, 200, request);
+      pending: false
+    });
   }
 
-  return jsonResponse({
+  const token = randomToken();
+  const hash = await tokenHash(token);
+
+  const updated = await env.DB.prepare(`
+    UPDATE support_sessions
+    SET visitor_token_hash = ?, updated_at = ?
+    WHERE id = ?
+      AND visitor_token_hash IS NULL
+      AND status = 'pending'
+  `).bind(hash, now, support.id).run();
+
+  if (!updated.meta?.changes) {
+    return jsonResponse(request, {
+      ok: true,
+      pending: false
+    });
+  }
+
+  return jsonResponse(request, {
     ok: true,
-    requestPending: true,
-    supportId: row.id,
-    visitorToken: token,
-    expiresAt: row.expires_at
-  }, 200, request);
+    pending: true,
+    supportId: support.id,
+    token,
+    expiresAt: support.expires_at
+  });
 }
 
 async function handleSupportStatus(request, env) {
-  const id = new URL(request.url).searchParams.get("id") || "";
-  const auth = await supportAuth(request, env, id);
+  const url = new URL(request.url);
+  const supportId = url.searchParams.get('id');
 
-  if (!auth) {
-    return errorResponse(
-      "Unauthorised support session.",
-      401,
-      request
-    );
+  if (!validString(supportId, 128)) {
+    return errorResponse(request, 'Missing support ID.');
   }
 
-  const row = await env.DB.prepare(
-    `SELECT
-      id, status, visitor_session_id,
-      created_at, updated_at, expires_at
-     FROM support_sessions
-     WHERE id = ?
-     LIMIT 1`
-  ).bind(id).first();
+  const support = await getSupportSession(env, supportId);
 
-  if (!row) {
-    return errorResponse(
-      "Support session not found.",
-      404,
-      request
-    );
+  if (!support) {
+    return errorResponse(request, 'Support session not found.', 404);
+  }
+
+  const body = request.method === 'POST'
+    ? await readJSON(request)
+    : {};
+
+  const isAdmin = requireAdmin(request, env);
+  const isVisitor = await visitorOwnsSupport(request, support, body);
+
+  if (!isAdmin && !isVisitor) {
+    return errorResponse(request, 'Unauthorised.', 401);
   }
 
   if (
-    row.expires_at < Math.floor(Date.now() / 1000) &&
-    !["ended", "denied"].includes(row.status)
+    support.expires_at <= nowSeconds() &&
+    ['pending', 'approved', 'connected'].includes(support.status)
   ) {
-    await env.DB.prepare(
-      `UPDATE support_sessions
-       SET status = 'ended', updated_at = ?
-       WHERE id = ?`
-    ).bind(Math.floor(Date.now() / 1000), id).run();
+    await env.DB.prepare(`
+      UPDATE support_sessions
+      SET status = 'ended', updated_at = ?
+      WHERE id = ?
+    `).bind(nowSeconds(), supportId).run();
 
-    row.status = "ended";
+    support.status = 'ended';
   }
 
-  return jsonResponse({
+  return jsonResponse(request, {
     ok: true,
-    support: row
-  }, 200, request);
+    support: {
+      id: support.id,
+      visitorSessionId: support.visitor_session_id,
+      status: support.status,
+      createdAt: support.created_at,
+      updatedAt: support.updated_at,
+      expiresAt: support.expires_at
+    }
+  });
 }
 
 async function handleSupportDecision(request, env) {
-  let body;
+  const body = await readJSON(request);
+  const supportId = body.supportId || body.id;
+  const decision = body.decision;
 
-  try {
-    body = await readJson(request, 4096);
-  } catch (e) {
-    return errorResponse(e.message, 413, request);
+  if (!validString(supportId, 128)) {
+    return errorResponse(request, 'Missing support ID.');
   }
 
-  if (
-    !validString(body.supportId, 100) ||
-    !["approved", "denied"].includes(body.decision)
-  ) {
-    return errorResponse("Invalid decision.", 400, request);
+  if (!['approved', 'denied'].includes(decision)) {
+    return errorResponse(request, 'Decision must be approved or denied.');
   }
 
-  const auth = await supportAuth(
-    request,
-    env,
-    body.supportId
-  );
+  const support = await getSupportSession(env, supportId);
 
-  if (!auth || auth.role !== "visitor") {
+  if (!support) {
+    return errorResponse(request, 'Support session not found.', 404);
+  }
+
+  if (!(await visitorOwnsSupport(request, support, body))) {
+    return errorResponse(request, 'Unauthorised.', 401);
+  }
+
+  if (support.status !== 'pending') {
     return errorResponse(
-      "Only the visitor can approve or deny.",
-      401,
-      request
+      request,
+      'This support request is no longer pending.',
+      409
     );
   }
 
-  if (auth.row.status !== "pending") {
-    return errorResponse(
-      "This request is no longer pending.",
-      409,
-      request
-    );
+  if (support.expires_at <= nowSeconds()) {
+    await env.DB.prepare(`
+      UPDATE support_sessions
+      SET status = 'ended', updated_at = ?
+      WHERE id = ?
+    `).bind(nowSeconds(), supportId).run();
+
+    return errorResponse(request, 'Support request has expired.', 410);
   }
 
-  const now = Math.floor(Date.now() / 1000);
+  const now = nowSeconds();
 
-  await env.DB.prepare(
-    `UPDATE support_sessions
-     SET status = ?, updated_at = ?
-     WHERE id = ? AND status = 'pending'`
-  ).bind(
-    body.decision,
-    now,
-    body.supportId
-  ).run();
+  await env.DB.prepare(`
+    UPDATE support_sessions
+    SET status = ?, updated_at = ?
+    WHERE id = ?
+  `).bind(decision, now, supportId).run();
 
-  return jsonResponse({
+  return jsonResponse(request, {
     ok: true,
-    status: body.decision
-  }, 200, request);
+    status: decision
+  });
 }
 
 async function handleSupportSignal(request, env) {
-  let body;
+  const body = await readJSON(request);
 
-  try {
-    body = await readJson(request, 28000);
-  } catch (e) {
-    return errorResponse(e.message, 413, request);
+  const supportId = body.supportId || body.id;
+  const signalType = body.signalType;
+  const payload = body.payload;
+
+  if (!validString(supportId, 128)) {
+    return errorResponse(request, 'Missing support ID.');
   }
 
-  if (
-    !validString(body.supportId, 100) ||
-    !["offer", "answer", "ice-candidate"].includes(body.signalType) ||
-    !body.payload ||
-    typeof body.payload !== "object"
-  ) {
-    return errorResponse("Invalid signal.", 400, request);
+  if (!SIGNAL_TYPES.has(signalType)) {
+    return errorResponse(request, 'Invalid signal type.');
   }
 
-  const auth = await supportAuth(
-    request,
-    env,
-    body.supportId
-  );
+  if (!payload || typeof payload !== 'object') {
+    return errorResponse(request, 'Missing signal payload.');
+  }
 
-  if (!auth) {
+  if (JSON.stringify(payload).length > 20000) {
+    return errorResponse(request, 'Signal payload is too large.');
+  }
+
+  const support = await getSupportSession(env, supportId);
+
+  if (!support) {
+    return errorResponse(request, 'Support session not found.', 404);
+  }
+
+  const isAdmin = requireAdmin(request, env);
+  const isVisitor = await visitorOwnsSupport(request, support, body);
+
+  if (!isAdmin && !isVisitor) {
+    return errorResponse(request, 'Unauthorised.', 401);
+  }
+
+  if (!['approved', 'connected'].includes(support.status)) {
     return errorResponse(
-      "Unauthorised support session.",
-      401,
-      request
+      request,
+      'Support session is not approved.',
+      409
     );
   }
 
-  if (!["approved", "connected"].includes(auth.row.status)) {
-    return errorResponse(
-      "Support session is not approved.",
-      409,
-      request
-    );
+  if (support.expires_at <= nowSeconds()) {
+    return errorResponse(request, 'Support session has expired.', 410);
   }
 
-  const payloadText = JSON.stringify(body.payload);
+  const sender = isAdmin ? 'admin' : 'visitor';
+  const id = randomId();
+  const now = nowSeconds();
 
-  if (payloadText.length > 24000) {
-    return errorResponse(
-      "Signal payload is too large.",
-      413,
-      request
-    );
-  }
-
-  const count = await env.DB.prepare(
-    `SELECT COUNT(*) AS n
-     FROM support_signals
-     WHERE support_session_id = ?`
-  ).bind(body.supportId).first();
-
-  if (Number(count?.n || 0) >= 200) {
-    return errorResponse(
-      "Signal limit reached; restart the support session.",
-      429,
-      request
-    );
-  }
-
-  const now = Math.floor(Date.now() / 1000);
-  const id = makeId();
-
-  await env.DB.prepare(
-    `INSERT INTO support_signals
-    (
+  await env.DB.prepare(`
+    INSERT INTO support_signals (
       id, support_session_id, sender,
       signal_type, payload_json, created_at
-    )
-    VALUES (?, ?, ?, ?, ?, ?)`
-  ).bind(
+    ) VALUES (?, ?, ?, ?, ?, ?)
+  `).bind(
     id,
-    body.supportId,
-    auth.role,
-    body.signalType,
-    payloadText,
+    supportId,
+    sender,
+    signalType,
+    JSON.stringify(payload),
     now
   ).run();
 
-  await env.DB.prepare(
-    `UPDATE support_sessions
-     SET status = 'connected', updated_at = ?
-     WHERE id = ? AND status = 'approved'`
-  ).bind(now, body.supportId).run();
+  if (support.status === 'approved') {
+    await env.DB.prepare(`
+      UPDATE support_sessions
+      SET status = 'connected', updated_at = ?
+      WHERE id = ? AND status = 'approved'
+    `).bind(now, supportId).run();
+  }
 
-  return jsonResponse({
+  return jsonResponse(request, {
     ok: true,
-    id
-  }, 200, request);
+    signalId: id
+  });
 }
 
 async function handleSupportSignals(request, env) {
-  const id = new URL(request.url).searchParams.get("id") || "";
-  const auth = await supportAuth(request, env, id);
+  const url = new URL(request.url);
+  const supportId = url.searchParams.get('id');
 
-  if (!auth) {
-    return errorResponse(
-      "Unauthorised support session.",
-      401,
-      request
-    );
+  if (!validString(supportId, 128)) {
+    return errorResponse(request, 'Missing support ID.');
   }
 
-  const result = await env.DB.prepare(
-    `SELECT id, sender, signal_type, payload_json, created_at
-     FROM support_signals
-     WHERE support_session_id = ?
-     ORDER BY created_at ASC, id ASC
-     LIMIT 200`
-  ).bind(id).all();
+  const support = await getSupportSession(env, supportId);
+
+  if (!support) {
+    return errorResponse(request, 'Support session not found.', 404);
+  }
+
+  const body = request.method === 'POST'
+    ? await readJSON(request)
+    : {};
+
+  const isAdmin = requireAdmin(request, env);
+  const isVisitor = await visitorOwnsSupport(request, support, body);
+
+  if (!isAdmin && !isVisitor) {
+    return errorResponse(request, 'Unauthorised.', 401);
+  }
+
+  const result = await env.DB.prepare(`
+    SELECT id, sender, signal_type, payload_json, created_at
+    FROM support_signals
+    WHERE support_session_id = ?
+    ORDER BY created_at ASC
+    LIMIT 300
+  `).bind(supportId).all();
 
   const signals = (result.results || []).map(s => {
     let payload = {};
@@ -825,173 +767,121 @@ async function handleSupportSignals(request, env) {
     };
   });
 
-  return jsonResponse({
+  return jsonResponse(request, {
     ok: true,
     signals
-  }, 200, request);
+  });
 }
 
 async function handleSupportEnd(request, env) {
-  let body;
+  const body = await readJSON(request);
+  const supportId = body.supportId || body.id;
 
-  try {
-    body = await readJson(request, 4096);
-  } catch (e) {
-    return errorResponse(e.message, 413, request);
+  if (!validString(supportId, 128)) {
+    return errorResponse(request, 'Missing support ID.');
   }
 
-  if (!validString(body.supportId, 100)) {
-    return errorResponse("Invalid support ID.", 400, request);
+  const support = await getSupportSession(env, supportId);
+
+  if (!support) {
+    return errorResponse(request, 'Support session not found.', 404);
   }
 
-  const auth = await supportAuth(
-    request,
-    env,
-    body.supportId
-  );
+  const isAdmin = requireAdmin(request, env);
+  const isVisitor = await visitorOwnsSupport(request, support, body);
 
-  if (!auth) {
-    return errorResponse(
-      "Unauthorised support session.",
-      401,
-      request
-    );
+  if (!isAdmin && !isVisitor) {
+    return errorResponse(request, 'Unauthorised.', 401);
   }
 
-  const now = Math.floor(Date.now() / 1000);
+  await env.DB.prepare(`
+    UPDATE support_sessions
+    SET status = 'ended', updated_at = ?
+    WHERE id = ?
+  `).bind(nowSeconds(), supportId).run();
 
-  await env.DB.prepare(
-    `UPDATE support_sessions
-     SET status = 'ended', updated_at = ?
-     WHERE id = ?`
-  ).bind(now, body.supportId).run();
-
-  return jsonResponse({
+  return jsonResponse(request, {
     ok: true,
-    status: "ended"
-  }, 200, request);
+    status: 'ended'
+  });
+}
+
+async function routeRequest(request, env) {
+  requireDatabase(env);
+
+  const url = new URL(request.url);
+  const path = url.pathname;
+
+  if (request.method === 'GET' && path === '/api/health') {
+    return handleHealth(request, env);
+  }
+
+  if (request.method === 'POST' && path === '/api/event') {
+    return handleEvent(request, env);
+  }
+
+  if (request.method === 'GET' && path === '/api/dashboard') {
+    return handleDashboard(request, env);
+  }
+
+  if (request.method === 'POST' && path === '/api/support/request') {
+    return handleSupportRequest(request, env);
+  }
+
+  if (request.method === 'GET' && path === '/api/support/pending') {
+    return handleSupportPending(request, env);
+  }
+
+  if (
+    (request.method === 'GET' || request.method === 'POST') &&
+    path === '/api/support/status'
+  ) {
+    return handleSupportStatus(request, env);
+  }
+
+  if (request.method === 'POST' && path === '/api/support/decision') {
+    return handleSupportDecision(request, env);
+  }
+
+  if (request.method === 'POST' && path === '/api/support/signal') {
+    return handleSupportSignal(request, env);
+  }
+
+  if (
+    (request.method === 'GET' || request.method === 'POST') &&
+    path === '/api/support/signals'
+  ) {
+    return handleSupportSignals(request, env);
+  }
+
+  if (request.method === 'POST' && path === '/api/support/end') {
+    return handleSupportEnd(request, env);
+  }
+
+  return errorResponse(request, 'Not found.', 404);
 }
 
 export default {
   async fetch(request, env) {
-    const url = new URL(request.url);
-
-    if (request.method === "OPTIONS") {
-      if (!originAllowed(request)) {
-        return new Response(null, { status: 403 });
-      }
-
-      return new Response(null, {
-        status: 204,
-        headers: corsHeaders(request)
-      });
-    }
-
-    if (!originAllowed(request)) {
-      return errorResponse(
-        "Origin not allowed.",
-        403,
-        request
-      );
+    if (request.method === 'OPTIONS') {
+      return optionsResponse(request);
     }
 
     try {
-      if (
-        request.method === "GET" &&
-        url.pathname === "/api/health"
-      ) {
-        return await handleHealth(request, env);
-      }
-
-      if (
-        request.method === "POST" &&
-        url.pathname === "/api/event"
-      ) {
-        return await handleEvent(request, env);
-      }
-
-      if (
-        request.method === "GET" &&
-        url.pathname === "/api/dashboard"
-      ) {
-        if (!env.DB) {
-          return errorResponse(
-            "Database binding DB is missing.",
-            500,
-            request
-          );
-        }
-
-        return await handleDashboard(request, env);
-      }
-
-      if (
-        request.method === "POST" &&
-        url.pathname === "/api/support/request"
-      ) {
-        return await handleSupportRequest(request, env);
-      }
-
-      if (
-        request.method === "GET" &&
-        url.pathname === "/api/support/pending"
-      ) {
-        return await handleSupportPending(request, env);
-      }
-
-      if (
-        request.method === "GET" &&
-        url.pathname === "/api/support/status"
-      ) {
-        return await handleSupportStatus(request, env);
-      }
-
-      if (
-        request.method === "POST" &&
-        url.pathname === "/api/support/decision"
-      ) {
-        return await handleSupportDecision(request, env);
-      }
-
-      if (
-        request.method === "POST" &&
-        url.pathname === "/api/support/signal"
-      ) {
-        return await handleSupportSignal(request, env);
-      }
-
-      if (
-        request.method === "GET" &&
-        url.pathname === "/api/support/signals"
-      ) {
-        return await handleSupportSignals(request, env);
-      }
-
-      if (
-        request.method === "POST" &&
-        url.pathname === "/api/support/end"
-      ) {
-        return await handleSupportEnd(request, env);
-      }
-
-      if (
-        request.method === "GET" &&
-        url.pathname === "/"
-      ) {
-        return jsonResponse({
-          ok: true,
-          name: "Visitor Dashboard API",
-          support: true
-        }, 200, request);
-      }
-
-      return errorResponse("Not found.", 404, request);
+      return await routeRequest(request, env);
     } catch (error) {
+      console.error('Worker error:', error);
+
+      const status = /too large/i.test(error.message) ? 413 : 500;
+
       return errorResponse(
-        error?.message || "Internal server error.",
-        500,
-        request
+        request,
+        status === 413
+          ? 'Request body is too large.'
+          : 'Internal server error.',
+        status
       );
     }
   }
 };
+d
