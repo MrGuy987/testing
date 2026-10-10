@@ -1,360 +1,506 @@
-
 (() => {
-  const API_BASE = "https://testing.mrguy987.workers.dev";
+  'use strict';
+
+  const API_BASE = 'https://testing.mrguy987.workers.dev';
+  const ICE_SERVERS = [
+    { urls: 'stun:stun.l.google.com:19302' }
+  ];
+
+  let adminKey = '';
+  let selectedSession = null;
+  let refreshTimer = null;
+  let currentData = null;
+  let supportId = null;
+  let supportPoll = null;
+  let signalTimer = null;
+
+  const adminPCs = {};
+  const seenSignals = new Set();
+  const pendingCandidates = {
+    camera: [],
+    screen: []
+  };
+  const remoteStreams = {};
 
   const $ = id => document.getElementById(id);
 
-  let adminKey = "";
-  let selectedSession = "";
-  let refreshTimer = null;
-  let currentData = null;
+  const esc = value =>
+    String(value ?? '').replace(/[&<>"']/g, c => ({
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;'
+    }[c]));
 
   const field = (obj, ...keys) => {
-    for (const key of keys) {
-      if (obj?.[key] !== undefined && obj[key] !== null) {
-        return obj[key];
+    for (const k of keys) {
+      if (obj && obj[k] !== undefined && obj[k] !== null) {
+        return obj[k];
       }
     }
-    return null;
+
+    return '';
   };
 
-  const sessionIdOf = s =>
-    String(field(s, "id", "sessionId", "session_id") ?? "");
+  const fmtTime = value => {
+    const n = Number(value);
 
-  const lastSeenOf = s =>
-    field(s, "lastSeen", "last_seen_at", "lastSeenAt");
+    if (!n) return '—';
 
-  const pageOf = s =>
-    field(s, "currentPage", "current_page", "page") ?? "/";
+    return new Date(n < 1e12 ? n * 1000 : n)
+      .toLocaleString();
+  };
 
-  const eventSessionId = e =>
-    String(field(e, "sessionId", "session_id", "visitor_session_id") ?? "");
-
-  const eventType = e =>
-    String(field(e, "type", "eventType", "event_type") ?? "unknown");
-
-  const eventTime = e =>
-    field(e, "timestamp", "createdAt", "created_at");
-
-  const eventPage = e =>
-    field(e, "page", "currentPage", "current_page") ?? "/";
-
-  const escapeHTML = value =>
-    String(value ?? "").replace(/[&<>"']/g, character => ({
-      "&": "&amp;",
-      "<": "&lt;",
-      ">": "&gt;",
-      '"': "&quot;",
-      "'": "&#39;"
-    })[character]);
-
-  function pagePath(value) {
-    try {
-      return new URL(String(value || "/"), location.origin).pathname;
-    } catch {
-      return "/";
-    }
-  }
-
-  function validDate(value) {
-    if (value === null || value === undefined || value === "") {
-      return null;
-    }
-
-    const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? null : date;
-  }
-
-  function formatTime(value) {
-    const date = validDate(value);
-    return date ? date.toLocaleString() : "Unknown";
-  }
-
-  function timeAgo(value) {
-    const date = validDate(value);
-    if (!date) return "Unknown";
-
-    const seconds = Math.max(
-      0,
-      Math.floor((Date.now() - date.getTime()) / 1000)
-    );
-
-    if (seconds < 60) return `${seconds}s ago`;
-    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
-    if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
-
-    return `${Math.floor(seconds / 86400)}d ago`;
-  }
-
-  function isOnline(session) {
-    const date = validDate(lastSeenOf(session));
-    return Boolean(
-      date && Date.now() - date.getTime() < 120000 &&
-      field(session, "active") !== 0 &&
-      field(session, "active") !== false
-    );
-  }
-
-  function setConnection(connected, message) {
-    if (!$("connection")) return;
-
-    $("connection").textContent = message;
-    $("connection").classList.toggle("online", connected);
-  }
-
-  async function api(path) {
+  async function api(path, options = {}) {
     const response = await fetch(API_BASE + path, {
-      headers: { "X-Admin-Key": adminKey },
-      cache: "no-store"
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Admin-Key': adminKey,
+        ...(options.headers || {})
+      }
     });
 
-    const result = await response.json().catch(() => ({}));
-
-    if (!response.ok || result.ok === false) {
-      throw new Error(result.error || `Request failed (${response.status})`);
-    }
-
-    return result;
-  }
-
-  $("loginForm")?.addEventListener("submit", async event => {
-    event.preventDefault();
-
-    adminKey = $("adminKey").value.trim();
-    $("loginError").textContent = "";
+    let data = {};
 
     try {
-      await refresh();
+      data = await response.json();
+    } catch {}
 
-      $("loginPanel").hidden = true;
-      $("dashboard").hidden = false;
-      setConnection(true, "Connected");
-
-      clearInterval(refreshTimer);
-      refreshTimer = setInterval(() => {
-        refresh().catch(error => setConnection(false, error.message));
-      }, 15000);
-    } catch (error) {
-      adminKey = "";
-      $("loginError").textContent = error.message;
+    if (!response.ok || data.ok === false) {
+      throw new Error(
+        data.error || `Request failed (${response.status})`
+      );
     }
-  });
 
-  $("refreshBtn")?.addEventListener("click", () => {
-    refresh().catch(error => setConnection(false, error.message));
-  });
-
-  $("logoutBtn")?.addEventListener("click", () => {
-    clearInterval(refreshTimer);
-    refreshTimer = null;
-    adminKey = "";
-    currentData = null;
-    selectedSession = "";
-
-    $("adminKey").value = "";
-    $("dashboard").hidden = true;
-    $("loginPanel").hidden = false;
-    $("loginError").textContent = "";
-
-    setConnection(false, "Disconnected");
-  });
-
-  async function refresh() {
-    currentData = await api("/api/dashboard");
-    render();
-    setConnection(true, "Connected");
+    return data;
   }
 
-  function getSessions() {
-    const raw = currentData?.sessions ?? [];
+  function isOnline(s) {
+    const t = Number(
+      field(s, 'last_seen_at', 'lastSeenAt')
+    ) * 1000;
 
-    return (Array.isArray(raw) ? raw : Object.values(raw))
-      .filter(session => session && typeof session === "object")
-      .sort((a, b) => {
-        const aTime = validDate(lastSeenOf(a))?.getTime() ?? 0;
-        const bTime = validDate(lastSeenOf(b))?.getTime() ?? 0;
-        return bTime - aTime;
+    return Boolean(
+      t &&
+      Date.now() - t < 120000 &&
+      Number(field(s, 'active')) !== 0 &&
+      field(s, 'active') !== false
+    );
+  }
+
+  function resetSupport(message = 'No support session active.') {
+    if (supportPoll) clearInterval(supportPoll);
+    if (signalTimer) clearInterval(signalTimer);
+
+    supportPoll = null;
+    signalTimer = null;
+    supportId = null;
+
+    for (const pc of Object.values(adminPCs)) {
+      try {
+        pc.close();
+      } catch {}
+    }
+
+    for (const k of Object.keys(adminPCs)) {
+      delete adminPCs[k];
+    }
+
+    for (const k of Object.keys(remoteStreams)) {
+      delete remoteStreams[k];
+    }
+
+    for (const k of Object.keys(pendingCandidates)) {
+      pendingCandidates[k] = [];
+    }
+
+    seenSignals.clear();
+
+    $('remoteCamera').srcObject = null;
+    $('remoteScreen').srcObject = null;
+    $('supportStatus').textContent = message;
+    $('endSupportBtn').disabled = true;
+  }
+
+  async function requestSupport(sessionId) {
+    try {
+      resetSupport('Creating support request…');
+
+      const d = await api('/api/support/request', {
+        method: 'POST',
+        body: JSON.stringify({
+          visitorSessionId: sessionId
+        })
       });
+
+      supportId = d.supportId;
+
+      $('supportStatus').textContent =
+        `Request sent for ${sessionId}. Waiting for the visitor to approve it.`;
+
+      $('endSupportBtn').disabled = false;
+
+      supportPoll = setInterval(checkSupportStatus, 1500);
+      signalTimer = setInterval(pollSignals, 1000);
+
+      await checkSupportStatus();
+    } catch (e) {
+      $('supportStatus').textContent =
+        'Could not request support: ' + e.message;
+    }
   }
 
-  function getEvents() {
-    const raw = currentData?.events ?? [];
-    return Array.isArray(raw) ? raw : Object.values(raw);
+  async function checkSupportStatus() {
+    if (!supportId) return;
+
+    try {
+      const d = await api(
+        '/api/support/status?id=' +
+        encodeURIComponent(supportId)
+      );
+
+      const s = d.support.status;
+
+      if (s === 'pending') {
+        $('supportStatus').textContent =
+          'Waiting for the visitor to approve the support request…';
+      } else if (s === 'approved') {
+        $('supportStatus').textContent =
+          'Visitor approved. Waiting for the visitor to start sharing media…';
+      } else if (s === 'connected') {
+        $('supportStatus').textContent =
+          'Support connection established or being negotiated.';
+      } else if (s === 'denied') {
+        resetSupport('The visitor rejected the support request.');
+      } else if (s === 'ended') {
+        resetSupport('Support session ended or expired.');
+      }
+    } catch (e) {
+      $('supportStatus').textContent =
+        'Support status error: ' + e.message;
+    }
+  }
+
+  async function sendSignal(type, payload) {
+    if (!supportId) return;
+
+    await api('/api/support/signal', {
+      method: 'POST',
+      body: JSON.stringify({
+        supportId,
+        signalType: type,
+        payload
+      })
+    });
+  }
+
+  function pcFor(media) {
+    if (adminPCs[media]) return adminPCs[media];
+
+    const pc = new RTCPeerConnection({
+      iceServers: ICE_SERVERS
+    });
+
+    adminPCs[media] = pc;
+
+    pc.onicecandidate = e => {
+      if (e.candidate) {
+        sendSignal('ice-candidate', {
+          media,
+          candidate: e.candidate.toJSON()
+        }).catch(err => {
+          $('supportStatus').textContent =
+            'ICE signal error: ' + err.message;
+        });
+      }
+    };
+
+    pc.ontrack = e => {
+      const stream = e.streams[0];
+
+      if (stream) {
+        remoteStreams[media] = stream;
+
+        const video = media === 'camera'
+          ? $('remoteCamera')
+          : $('remoteScreen');
+
+        video.srcObject = stream;
+        video.play().catch(() => {});
+      }
+    };
+
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === 'connected') {
+        $('supportStatus').textContent =
+          'Connected. Viewing only the media the visitor chose to share.';
+      }
+
+      if (pc.connectionState === 'failed') {
+        $('supportStatus').textContent =
+          'WebRTC connection failed. This network may require a TURN server.';
+      }
+    };
+
+    return pc;
+  }
+
+  async function processSignal(s) {
+    const p = s.payload || {};
+    const media = p.media;
+
+    if (!['camera', 'screen'].includes(media)) return;
+
+    const pc = pcFor(media);
+
+    if (s.signalType === 'offer' && p.description) {
+      if (!pc.currentRemoteDescription) {
+        await pc.setRemoteDescription(p.description);
+
+        for (const candidate of pendingCandidates[media]) {
+          try {
+            await pc.addIceCandidate(candidate);
+          } catch {}
+        }
+
+        pendingCandidates[media] = [];
+
+        const answer = await pc.createAnswer();
+
+        await pc.setLocalDescription(answer);
+
+        await sendSignal('answer', {
+          media,
+          description: pc.localDescription.toJSON()
+        });
+      }
+    } else if (
+      s.signalType === 'ice-candidate' &&
+      p.candidate
+    ) {
+      if (pc.remoteDescription) {
+        try {
+          await pc.addIceCandidate(p.candidate);
+        } catch {}
+      } else {
+        pendingCandidates[media].push(p.candidate);
+      }
+    }
+  }
+
+  async function pollSignals() {
+    if (!supportId) return;
+
+    try {
+      const d = await api(
+        '/api/support/signals?id=' +
+        encodeURIComponent(supportId)
+      );
+
+      for (const s of d.signals || []) {
+        if (seenSignals.has(s.id)) continue;
+
+        seenSignals.add(s.id);
+
+        if (
+          s.sender === 'visitor' &&
+          ['offer', 'ice-candidate'].includes(s.signalType)
+        ) {
+          try {
+            await processSignal(s);
+          } catch (e) {
+            $('supportStatus').textContent =
+              'WebRTC negotiation error: ' + e.message;
+          }
+        }
+      }
+    } catch (e) {
+      if (!/not approved/i.test(e.message)) {
+        $('supportStatus').textContent =
+          'Signal polling error: ' + e.message;
+      }
+    }
+  }
+
+  async function endSupport() {
+    if (!supportId) return;
+
+    const id = supportId;
+
+    try {
+      await api('/api/support/end', {
+        method: 'POST',
+        body: JSON.stringify({ supportId: id })
+      });
+    } catch {}
+
+    resetSupport('Support session ended.');
   }
 
   function render() {
     if (!currentData) return;
 
-    const sessions = getSessions();
-    const events = getEvents();
+    const st = currentData.stats || {};
 
-    const online = sessions.filter(isOnline).length;
+    $('onlineCount').textContent = st.online ?? 0;
+    $('pageViews').textContent = st.pageViews ?? 0;
+    $('sessionCount').textContent = st.sessions ?? 0;
+    $('eventCount').textContent = st.events ?? 0;
 
-    $("onlineCount").textContent = online;
-    $("pageViews").textContent = events.filter(
-      event => eventType(event) === "page_view"
-    ).length;
-    $("sessionCount").textContent = sessions.length;
-    $("eventCount").textContent = events.length;
-    $("updated").textContent =
-      `Updated ${new Date().toLocaleTimeString()}`;
+    $('updated').textContent =
+      'Updated ' + fmtTime(currentData.updatedAt);
 
-    const sessionRows = sessions.map(session => {
-      const id = sessionIdOf(session);
-      const onlineNow = isOnline(session);
-      const screenWidth = field(session, "screenWidth", "screen_width");
-      const screenHeight = field(session, "screenHeight", "screen_height");
-      const colourDepth = field(session, "colorDepth", "color_depth");
-      const platform = field(session, "platform", "operatingSystem", "operating_system");
-      const language = field(session, "language");
-      const timezone = field(session, "timezone");
-      const country = field(session, "country");
-      const ipHash = field(session, "ipHash", "ip_hash");
-      const pageViews = Number(field(session, "pageViews", "page_views") ?? 0);
+    const sessions = [...(currentData.sessions || [])]
+      .sort((a, b) =>
+        Number(field(b, 'last_seen_at')) -
+        Number(field(a, 'last_seen_at'))
+      );
 
-      return `
-        <tr class="selectable ${selectedSession === id ? "selected" : ""}"
-            data-session="${escapeHTML(id)}">
-          <td><span class="session-id">${escapeHTML(id.slice(0, 12))}${id.length > 12 ? "…" : ""}</span></td>
-          <td>${escapeHTML(pagePath(pageOf(session)))}</td>
-          <td>${escapeHTML(platform || "Unknown")}</td>
-          <td>${screenWidth && screenHeight
-            ? `${escapeHTML(screenWidth)} × ${escapeHTML(screenHeight)}`
-            : "Unknown"}</td>
-          <td>${colourDepth ? `${escapeHTML(colourDepth)}-bit` : "Unknown"}</td>
-          <td>${escapeHTML(language || "Unknown")}</td>
-          <td>${escapeHTML(timezone || "Unknown")}</td>
-          <td>${escapeHTML(country || "Unknown")}</td>
-          <td>${ipHash ? "Hashed" : "Unavailable"}</td>
-          <td>${escapeHTML(timeAgo(lastSeenOf(session)))}</td>
-          <td>${Number.isFinite(pageViews) ? pageViews : 0}</td>
-          <td><span class="pill ${onlineNow ? "" : "offline"}">${onlineNow ? "Online" : "Offline"}</span></td>
-        </tr>`;
-    });
+    $('sessionsBody').innerHTML = sessions.length
+      ? sessions.map(s => {
+          const id = field(s, 'id');
+          const platform = field(s, 'platform') || '—';
 
-    $("sessionsBody").innerHTML = sessionRows.length
-      ? sessionRows.join("")
-      : `<tr><td colspan="12">No sessions yet. Accept the tracking notice on the website to test it.</td></tr>`;
+          const screen =
+            field(s, 'screen_width') &&
+            field(s, 'screen_height')
+              ? `${s.screen_width} × ${s.screen_height}`
+              : '—';
 
-    document.querySelectorAll("#sessionsBody [data-session]").forEach(row => {
-      row.addEventListener("click", () => {
-        selectedSession = row.dataset.session;
-        render();
-      });
-    });
+          return `<tr>
+            <td><code>${esc(id)}</code></td>
+            <td>${esc(field(s, 'current_page') || '—')}</td>
+            <td>${esc(platform)}</td>
+            <td>${esc(screen)}</td>
+            <td>${esc(field(s, 'language') || '—')}</td>
+            <td>${esc(fmtTime(field(s, 'last_seen_at')))}</td>
+            <td>${esc(field(s, 'views') || 0)}</td>
+            <td>
+              <span class="status-pill ${isOnline(s) ? 'online' : 'offline'}">
+                ${isOnline(s) ? 'Online' : 'Offline'}
+              </span>
+            </td>
+            <td>
+              <button
+                class="button secondary request-support"
+                data-session="${esc(id)}">
+                Request support
+              </button>
+            </td>
+          </tr>`;
+        }).join('')
+      : '<tr><td colspan="9">No visitor sessions yet.</td></tr>';
 
-    renderSessionDetails(sessions);
-    renderTimeline(events);
-    renderPopularPages(events);
-  }
-
-  function renderSessionDetails(sessions) {
-    const container = $("sessionDetails");
-    if (!container) return;
-
-    const session = sessions.find(s => sessionIdOf(s) === selectedSession);
-
-    if (!session) {
-      container.innerHTML = `<p class="muted">Select a session to view its details.</p>`;
-      return;
-    }
-
-    const details = [
-      ["Session ID", sessionIdOf(session)],
-      ["First seen", formatTime(field(session, "startedAt", "started_at", "createdAt", "created_at"))],
-      ["Last seen", formatTime(lastSeenOf(session))],
-      ["Current page", pageOf(session)],
-      ["Referrer", field(session, "referrer") || "Unknown"],
-      ["Operating system", field(session, "platform", "operatingSystem", "operating_system") || "Unknown"],
-      ["Screen size", field(session, "screenWidth", "screen_width") && field(session, "screenHeight", "screen_height")
-        ? `${field(session, "screenWidth", "screen_width")} × ${field(session, "screenHeight", "screen_height")}`
-        : "Unknown"],
-      ["Language", field(session, "language") || "Unknown"],
-      ["Timezone", field(session, "timezone") || "Unknown"],
-      ["Country", field(session, "country") || "Unknown"]
-    ];
-
-    container.innerHTML = details.map(([label, value]) => `
-      <div class="detail-row">
-        <strong>${escapeHTML(label)}</strong>
-        <span>${escapeHTML(value)}</span>
-      </div>
-    `).join("");
-  }
-
-  function renderTimeline(events) {
-    const sessionEvents = events
-      .filter(event => eventSessionId(event) === selectedSession)
-      .sort((a, b) => {
-        const at = validDate(eventTime(a))?.getTime() ?? 0;
-        const bt = validDate(eventTime(b))?.getTime() ?? 0;
-        return bt - at;
-      })
-      .slice(0, 100);
-
-    if ($("selectedSessionLabel")) {
-      $("selectedSessionLabel").textContent = selectedSession
-        ? `Session ${selectedSession}`
-        : "Select a session above.";
-    }
-
-    if ($("timelineSessionLabel")) {
-      $("timelineSessionLabel").textContent = selectedSession
-        ? `Timeline: ${selectedSession}`
-        : "No session selected";
-    }
-
-    if (!selectedSession) {
-      $("timeline").innerHTML = `<p class="muted">No session selected.</p>`;
-      return;
-    }
-
-    $("timeline").innerHTML = sessionEvents.length
-      ? sessionEvents.map(event => {
-          const type = eventType(event);
-          const label = field(event, "label", "details", "details_json");
-
-          return `
-            <div class="event">
-              <div class="event-time">${escapeHTML(formatTime(eventTime(event)))}</div>
-              <div class="event-dot"></div>
-              <div>
-                <strong>${escapeHTML(type.replaceAll("_", " "))}</strong>
-                <p>${escapeHTML(pagePath(eventPage(event)))}${label
-                  ? " · " + escapeHTML(typeof label === "string" ? label : JSON.stringify(label))
-                  : ""}</p>
-              </div>
-            </div>`;
-        }).join("")
-      : `<p class="muted">No events for this session.</p>`;
-  }
-
-  function renderPopularPages(events) {
-    const counts = {};
-
-    events
-      .filter(event => eventType(event) === "page_view")
-      .forEach(event => {
-        const path = pagePath(eventPage(event));
-        counts[path] = (counts[path] || 0) + 1;
+    $('sessionsBody')
+      .querySelectorAll('.request-support')
+      .forEach(btn => {
+        btn.addEventListener('click', () =>
+          requestSupport(btn.dataset.session)
+        );
       });
 
-    const pages = Object.entries(counts)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 10);
+    const evs = currentData.events || [];
 
-    const maximum = Math.max(1, ...pages.map(([, count]) => count));
+    const selected =
+      selectedSession ||
+      field(sessions[0] || {}, 'id');
 
-    $("popularPages").innerHTML = pages.length
-      ? pages.map(([page, count]) => `
-          <div class="popular-row">
-            <span>${escapeHTML(page)}</span>
-            <div class="bar">
-              <span style="width:${count / maximum * 100}%"></span>
+    if (selected) {
+      selectedSession = selected;
+
+      $('selectedSessionLabel').textContent =
+        'Session: ' + selected;
+
+      const relevant = evs.filter(e =>
+        field(e, 'visitor_session_id', 'sessionId') === selected
+      );
+
+      $('timeline').innerHTML = relevant.length
+        ? relevant.slice(0, 100).map(e => `
+            <div class="timeline-item">
+              <strong>${esc(field(e, 'event_type', 'eventType') || 'event')}</strong>
+              <span>${esc(field(e, 'page') || '')}</span>
+              <small>${esc(fmtTime(field(e, 'created_at', 'timestamp')))}</small>
             </div>
-            <strong>${count}</strong>
+          `).join('')
+        : '<p class="muted">No events for this session.</p>';
+    } else {
+      $('selectedSessionLabel').textContent = 'No session selected.';
+      $('timeline').innerHTML =
+        '<p class="muted">No session selected.</p>';
+    }
+
+    const pages = currentData.pages || [];
+
+    $('popularPages').innerHTML = pages.length
+      ? pages.map(p => `
+          <div class="popular-item">
+            <span>${esc(p.page)}</span>
+            <strong>${esc(p.views)}</strong>
           </div>
-        `).join("")
-      : `<p class="muted">No page views recorded yet.</p>`;
+        `).join('')
+      : '<p class="muted">No page views yet.</p>';
   }
+
+  async function refresh() {
+    try {
+      currentData = await api('/api/dashboard');
+
+      $('connection').textContent = 'Connected';
+      $('connection').classList.add('connected');
+
+      render();
+    } catch (e) {
+      $('connection').textContent = 'Disconnected';
+      $('connection').classList.remove('connected');
+
+      throw e;
+    }
+  }
+
+  $('loginForm').addEventListener('submit', async e => {
+    e.preventDefault();
+
+    adminKey = $('adminKey').value;
+
+    try {
+      await refresh();
+
+      $('loginPanel').hidden = true;
+      $('dashboard').hidden = false;
+      $('loginError').textContent = '';
+
+      if (refreshTimer) clearInterval(refreshTimer);
+
+      refreshTimer = setInterval(
+        () => refresh().catch(() => {}),
+        15000
+      );
+    } catch (err) {
+      $('loginError').textContent = err.message;
+      adminKey = '';
+    }
+  });
+
+  $('refreshBtn').addEventListener('click', () => {
+    refresh().catch(() => {
+      $('connection').textContent = 'Disconnected';
+    });
+  });
+
+  $('logoutBtn').addEventListener('click', () => {
+    if (refreshTimer) clearInterval(refreshTimer);
+
+    resetSupport('Signed out.');
+
+    adminKey = '';
+    $('adminKey').value = '';
+    $('dashboard').hidden = true;
+    $('loginPanel').hidden = false;
+    $('connection').textContent = 'Disconnected';
+  });
+
+  $('endSupportBtn').addEventListener('click', endSupport);
 })();

@@ -1,408 +1,672 @@
-
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Visitor Support Centre</title>
-  <style>
-    :root {
-      color-scheme: dark;
-      --bg: #0b1020;
-      --panel: #141c30;
-      --border: #293650;
-      --text: #edf3ff;
-      --muted: #9aa9c2;
-      --blue: #6c9cff;
-      --green: #57d6a0;
-      --red: #ff7185;
-    }
-
-    * { box-sizing: border-box; }
-
-    body {
-      margin: 0;
-      min-height: 100vh;
-      background: var(--bg);
-      color: var(--text);
-      font: 15px/1.6 system-ui, sans-serif;
-    }
-
-    header {
-      padding: 22px max(20px, calc((100% - 1100px) / 2));
-      border-bottom: 1px solid var(--border);
-      background: #10182a;
-    }
-
-    .brand {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-    }
-
-    .logo {
-      display: grid;
-      place-items: center;
-      width: 42px;
-      height: 42px;
-      border-radius: 12px;
-      background: var(--blue);
-      color: #071326;
-      font-size: 22px;
-      font-weight: 800;
-    }
-
-    h1, h2, p { margin-top: 0; }
-    h1 { margin-bottom: 3px; font-size: 27px; }
-    h2 { font-size: 19px; }
-    .muted { color: var(--muted); }
-    .small { font-size: 13px; }
-
-    main {
-      max-width: 1100px;
-      margin: 35px auto;
-      padding: 0 20px 40px;
-    }
-
-    .intro { margin-bottom: 25px; }
-
-    .notice {
-      padding: 15px 17px;
-      margin: 18px 0 24px;
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      background: #111a2c;
-    }
-
-    .notice strong { display: block; margin-bottom: 4px; }
-
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 20px;
-    }
-
-    .panel {
-      min-width: 0;
-      padding: 20px;
-      border: 1px solid var(--border);
-      border-radius: 16px;
-      background: var(--panel);
-    }
-
-    video {
-      display: block;
-      width: 100%;
-      aspect-ratio: 16 / 9;
-      margin: 15px 0;
-      border-radius: 10px;
-      background: #050914;
-      object-fit: contain;
-    }
-
-    .status {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      margin: 8px 0;
-      color: var(--muted);
-      font-size: 13px;
-    }
-
-    .dot {
-      width: 9px;
-      height: 9px;
-      flex: 0 0 auto;
-      border-radius: 50%;
-      background: #68758b;
-    }
-
-    .dot.active { background: var(--green); }
-    .dot.error { background: var(--red); }
-
-    .buttons {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 9px;
-      margin-top: 14px;
-    }
-
-    button {
-      min-height: 42px;
-      padding: 10px 15px;
-      border: 1px solid var(--border);
-      border-radius: 9px;
-      background: #202c43;
-      color: var(--text);
-      font: inherit;
-      font-weight: 650;
-      cursor: pointer;
-    }
-
-    button.primary {
-      border-color: var(--blue);
-      background: var(--blue);
-      color: #071326;
-    }
-
-    button.danger {
-      border-color: #793746;
-      color: #ffb4c0;
-    }
-
-    button:disabled {
-      opacity: .45;
-      cursor: not-allowed;
-    }
-
-    #supportStatus {
-      margin-top: 20px;
-      padding: 14px 16px;
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      background: #111a2c;
-      overflow-wrap: anywhere;
-    }
-
-    footer {
-      margin-top: 24px;
-      color: var(--muted);
-      font-size: 12px;
-    }
-
-    @media (max-width: 700px) {
-      .grid { grid-template-columns: 1fr; }
-      main { margin-top: 22px; }
-    }
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Visitor Support Centre</title>
+<style>
+:root {
+  color-scheme: dark;
+  --bg: #0b1020;
+  --panel: #121a2e;
+  --line: #293653;
+  --text: #eef3ff;
+  --muted: #a8b4cc;
+  --blue: #5d8cff;
+  --red: #ff6878;
+  --green: #48d6a0;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: radial-gradient(circle at top, #172546, var(--bg) 55%);
+  color: var(--text);
+  font: 16px/1.5 system-ui, sans-serif;
+}
+.wrap { max-width: 980px; margin: auto; padding: 28px 16px 70px; }
+h1 { margin: 0 0 6px; font-size: clamp(27px, 5vw, 40px); }
+h2 { margin: 0 0 12px; font-size: 20px; }
+.muted { color: var(--muted); }
+.panel {
+  background: #121a2eeb;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 20px;
+  margin: 18px 0;
+}
+.status {
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: #1b2945;
+  margin: 14px 0;
+}
+.row { display: flex; gap: 10px; flex-wrap: wrap; }
+.button {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 14px;
+  background: #1b2945;
+  color: var(--text);
+  font-weight: 650;
+  cursor: pointer;
+}
+.primary {
+  background: var(--blue);
+  border-color: var(--blue);
+  color: #071126;
+}
+.danger { background: #49202d; border-color: #733344; }
+.button:disabled { opacity: .45; cursor: not-allowed; }
+.videos {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 14px;
+}
+.video-box { min-width: 0; }
+.video-box video {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: contain;
+  background: #050812;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.label { display: block; font-weight: 650; margin-bottom: 8px; }
+.fine { font-size: 13px; color: var(--muted); }
+[hidden] { display: none !important; }
+</style>
 </head>
 <body>
-  <header>
-    <div class="brand">
-      <div class="logo">S</div>
-      <div>
-        <strong>Visitor Support Centre</strong>
-        <div class="muted small">Camera and screen-sharing controls</div>
-      </div>
-    </div>
-  </header>
+<main class="wrap">
+  <p class="muted">VISITOR SUPPORT</p>
+  <h1>Visitor Support Centre</h1>
+  <p class="muted">
+    You control whether any camera or screen feed is shared.
+    Nothing is shared until you approve a request and press Start sharing.
+  </p>
 
-  <main>
-    <section class="intro">
-      <h1>Privacy and support</h1>
-      <p class="muted">
-        Choose what you want to share. Nothing starts until you press
-        the relevant button and grant the browser's permission.
-      </p>
-    </section>
-
-    <div class="notice">
-      <strong>Your privacy matters</strong>
-      Your camera and screen previews below are local to this page.
-      This standalone version does not transmit video to an administrator.
-      Live dashboard sharing requires the matching authenticated
-      Cloudflare Worker signalling endpoints.
+  <section class="panel">
+    <h2>Connection status</h2>
+    <div id="status" class="status" role="status">
+      Checking for a support request…
     </div>
 
-    <div class="grid">
-      <section class="panel">
-        <h2>Webcam</h2>
-        <p class="muted small">
-          Start the camera only if you want to use it for support.
-          Your browser will ask for permission.
-        </p>
+    <div id="requestActions" class="row" hidden>
+      <button id="approve" class="button primary">
+        Approve support request
+      </button>
+      <button id="deny" class="button danger">
+        Reject request
+      </button>
+    </div>
 
-        <div class="status">
-          <span id="cameraDot" class="dot"></span>
-          <span id="cameraStatus">Camera is off</span>
-        </div>
+    <p class="fine">
+      A request expires after five minutes.
+      Rejecting or ending support stops the session.
+    </p>
+  </section>
 
+  <section id="mediaPanel" class="panel" hidden>
+    <h2>Choose what to share</h2>
+    <p class="muted">
+      The browser will ask separately for camera or screen access.
+      You can share either, both, or neither.
+    </p>
+
+    <div class="row">
+      <button id="cameraPreview" class="button">
+        Enable camera preview
+      </button>
+      <button id="screenPreview" class="button">
+        Choose screen to preview
+      </button>
+      <button id="startShare" class="button primary" disabled>
+        Start sharing selected media
+      </button>
+      <button id="stopShare" class="button danger" disabled>
+        Stop sharing
+      </button>
+      <button id="endSupport" class="button danger">
+        End support session
+      </button>
+    </div>
+
+    <div class="videos" style="margin-top:16px">
+      <div class="video-box">
+        <span class="label">Your camera preview</span>
         <video id="cameraVideo" autoplay muted playsinline></video>
-
-        <div class="buttons">
-          <button id="startCamera" class="primary">Enable webcam</button>
-          <button id="stopCamera" class="danger" disabled>Stop webcam</button>
-        </div>
-      </section>
-
-      <section class="panel">
-        <h2>Screen sharing</h2>
-        <p class="muted small">
-          Choose a screen, window, or browser tab in the browser prompt.
-          Review what you select before sharing.
-        </p>
-
-        <div class="status">
-          <span id="screenDot" class="dot"></span>
-          <span id="screenStatus">Screen sharing is off</span>
-        </div>
-
+      </div>
+      <div class="video-box">
+        <span class="label">Your screen preview</span>
         <video id="screenVideo" autoplay muted playsinline></video>
-
-        <div class="buttons">
-          <button id="startScreen" class="primary">Share screen</button>
-          <button id="stopScreen" class="danger" disabled>Stop sharing</button>
-        </div>
-      </section>
+      </div>
     </div>
 
-    <section class="panel" style="margin-top:20px">
-      <h2>Support session</h2>
-      <p class="muted">
-        The live connection to the administrator has not been configured
-        in this standalone page yet.
-      </p>
-      <div id="supportStatus" role="status" aria-live="polite">
-        No remote support connection. Your video is not being sent to
-        the dashboard by this page.
-      </div>
-    </section>
+    <p class="fine">
+      Screen sharing is limited to the screen, window, or tab you choose
+      in the browser picker. The support page does not record or save video.
+    </p>
+  </section>
 
-    <footer>
-      You can stop either stream at any time. Closing this page also
-      ends its local media streams.
-    </footer>
-  </main>
+  <section class="panel">
+    <h2>Privacy</h2>
+    <p class="muted">
+      This page does not enable remote keyboard or mouse control.
+      The support operator can only view media you explicitly share.
+      Use Stop sharing or End support at any time.
+    </p>
+  </section>
+</main>
 
-  <script>
-    "use strict";
+<script>
+(() => {
+  'use strict';
 
-    const cameraVideo = document.getElementById("cameraVideo");
-    const screenVideo = document.getElementById("screenVideo");
+  const API = 'https://testing.mrguy987.workers.dev';
+  const SESSION_KEY = 'visitor_dashboard_session';
+  const SUPPORT_KEY = 'visitor_support_active_v1';
 
-    let cameraStream = null;
-    let screenStream = null;
+  const ICE_SERVERS = [
+    { urls: 'stun:stun.l.google.com:19302' }
+  ];
 
-    function setStatus(type, message, active = false, error = false) {
-      document.getElementById(type + "Status").textContent = message;
+  const $ = id => document.getElementById(id);
 
-      const dot = document.getElementById(type + "Dot");
-      dot.classList.toggle("active", active);
-      dot.classList.toggle("error", error);
+  let sessionId = sessionStorage.getItem(SESSION_KEY) || '';
+  let supportId = '';
+  let token = '';
+  let statusTimer = null;
+  let signalTimer = null;
+  let signalSeen = new Set();
+  let approved = false;
+  let sharing = false;
+
+  let cameraStream = null;
+  let screenStream = null;
+  let pcs = {};
+
+  function status(message) {
+    $('status').textContent = message;
+  }
+
+  function authHeaders() {
+    return {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer ' + token
+    };
+  }
+
+  async function api(path, options = {}) {
+    const response = await fetch(API + path, options);
+
+    let data = {};
+
+    try {
+      data = await response.json();
+    } catch {}
+
+    if (!response.ok || data.ok === false) {
+      throw new Error(
+        data.error || ('Request failed (' + response.status + ')')
+      );
     }
 
-    function stopStream(stream) {
-      if (stream) {
-        stream.getTracks().forEach(track => track.stop());
-      }
+    return data;
+  }
+
+  function stored() {
+    try {
+      return JSON.parse(
+        sessionStorage.getItem(SUPPORT_KEY) || '{}'
+      );
+    } catch {
+      return {};
+    }
+  }
+
+  function save() {
+    sessionStorage.setItem(
+      SUPPORT_KEY,
+      JSON.stringify({ supportId, token })
+    );
+  }
+
+  function showMedia() {
+    $('mediaPanel').hidden = !approved;
+  }
+
+  async function pollPending() {
+    if (!sessionId) {
+      status(
+        'No tracked visitor session was found in this tab. ' +
+        'Open this page in the same tab as the website where you ' +
+        'accepted tracking, then reload.'
+      );
+      return;
     }
 
-    async function startCamera() {
-      if (!navigator.mediaDevices?.getUserMedia) {
-        setStatus(
-          "camera",
-          "Camera access is unavailable. Use a supported browser over HTTPS.",
-          false,
-          true
+    try {
+      if (supportId && token) {
+        const d = await api(
+          '/api/support/status?id=' +
+          encodeURIComponent(supportId),
+          { headers: authHeaders() }
         );
+
+        const s = d.support.status;
+
+        if (s === 'approved' || s === 'connected') {
+          approved = true;
+          showMedia();
+
+          status(
+            s === 'connected'
+              ? 'Support is connected. Start sharing only when ready.'
+              : 'Request approved. Choose media below, then press Start sharing.'
+          );
+
+          startSignalPolling();
+        } else if (s === 'denied') {
+          status('You rejected the support request.');
+          clearSupport();
+        } else if (s === 'ended') {
+          status('Support session ended or expired.');
+          stopAllMedia();
+          clearSupport();
+        } else {
+          status('Support request is waiting for your decision.');
+        }
+
         return;
       }
 
-      try {
-        cameraStream = await navigator.mediaDevices.getUserMedia({
-          video: true,
-          audio: false
-        });
+      const d = await api(
+        '/api/support/pending?sessionId=' +
+        encodeURIComponent(sessionId)
+      );
 
-        cameraVideo.srcObject = cameraStream;
+      if (d.requestPending && d.visitorToken) {
+        supportId = d.supportId;
+        token = d.visitorToken;
+        save();
 
-        document.getElementById("startCamera").disabled = true;
-        document.getElementById("stopCamera").disabled = false;
+        $('requestActions').hidden = false;
 
-        setStatus("camera", "Webcam preview is active on this device.", true);
-      } catch (error) {
-        setStatus(
-          "camera",
-          error.name === "NotAllowedError"
-            ? "Camera permission was denied."
-            : "Could not start the camera: " + error.message,
-          false,
-          true
+        status(
+          'A support operator is requesting a session. ' +
+          'Approve or reject it below.'
+        );
+      } else if (!d.requestPending) {
+        $('requestActions').hidden = true;
+
+        status(
+          'No support request is waiting. ' +
+          'This page will keep checking while it is open.'
+        );
+      } else {
+        status(
+          'A support request has already been claimed in another ' +
+          'open page. Keep using that page to respond.'
         );
       }
+    } catch (e) {
+      status('Connection error: ' + e.message);
     }
+  }
 
-    function stopCamera() {
-      stopStream(cameraStream);
-      cameraStream = null;
-      cameraVideo.srcObject = null;
+  async function decision(value) {
+    try {
+      await api('/api/support/decision', {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({
+          supportId,
+          decision: value
+        })
+      });
 
-      document.getElementById("startCamera").disabled = false;
-      document.getElementById("stopCamera").disabled = true;
+      $('requestActions').hidden = true;
 
-      setStatus("camera", "Camera is off");
-    }
+      if (value === 'approved') {
+        approved = true;
+        showMedia();
 
-    async function startScreen() {
-      if (!navigator.mediaDevices?.getDisplayMedia) {
-        setStatus(
-          "screen",
-          "Screen sharing is unavailable in this browser.",
-          false,
-          true
+        status(
+          'Approved. Choose preview options below, ' +
+          'then explicitly start sharing.'
         );
-        return;
+
+        startSignalPolling();
+      } else {
+        status('Support request rejected.');
+        clearSupport();
       }
-
-      try {
-        screenStream = await navigator.mediaDevices.getDisplayMedia({
-          video: true,
-          audio: false
-        });
-
-        screenVideo.srcObject = screenStream;
-
-        document.getElementById("startScreen").disabled = true;
-        document.getElementById("stopScreen").disabled = false;
-
-        setStatus("screen", "Screen preview is active on this device.", true);
-
-        // Also handle the browser's built-in "Stop sharing" control.
-        screenStream.getVideoTracks()[0].addEventListener(
-          "ended",
-          stopScreen,
-          { once: true }
-        );
-      } catch (error) {
-        setStatus(
-          "screen",
-          error.name === "NotAllowedError"
-            ? "Screen sharing was cancelled or denied."
-            : "Could not start screen sharing: " + error.message,
-          false,
-          true
-        );
-      }
+    } catch (e) {
+      status('Could not update request: ' + e.message);
     }
+  }
 
-    function stopScreen() {
-      stopStream(screenStream);
-      screenStream = null;
-      screenVideo.srcObject = null;
-
-      document.getElementById("startScreen").disabled = false;
-      document.getElementById("stopScreen").disabled = true;
-
-      setStatus("screen", "Screen sharing is off");
-    }
-
-    document.getElementById("startCamera").addEventListener(
-      "click", startCamera
-    );
-    document.getElementById("stopCamera").addEventListener(
-      "click", stopCamera
-    );
-    document.getElementById("startScreen").addEventListener(
-      "click", startScreen
-    );
-    document.getElementById("stopScreen").addEventListener(
-      "click", stopScreen
-    );
-
-    window.addEventListener("pagehide", () => {
-      stopStream(cameraStream);
-      stopStream(screenStream);
+  async function sendSignal(type, payload) {
+    await api('/api/support/signal', {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({
+        supportId,
+        signalType: type,
+        payload
+      })
     });
-  </script>
+  }
+
+  function pcFor(media) {
+    if (pcs[media]) return pcs[media];
+
+    const pc = new RTCPeerConnection({
+      iceServers: ICE_SERVERS
+    });
+
+    pcs[media] = pc;
+
+    pc.onicecandidate = e => {
+      if (e.candidate) {
+        sendSignal('ice-candidate', {
+          media,
+          candidate: e.candidate.toJSON()
+        }).catch(err => {
+          status('Signalling error: ' + err.message);
+        });
+      }
+    };
+
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === 'connected') {
+        status(
+          'Support is connected. You can stop sharing ' +
+          'or end support at any time.'
+        );
+      }
+
+      if (
+        ['failed', 'disconnected'].includes(pc.connectionState)
+      ) {
+        status(
+          'Connection interrupted. You can stop sharing or try again.'
+        );
+      }
+    };
+
+    return pc;
+  }
+
+  async function startSharing() {
+    if (!approved) return;
+
+    const selected = [];
+
+    if (cameraStream) {
+      selected.push(['camera', cameraStream]);
+    }
+
+    if (screenStream) {
+      selected.push(['screen', screenStream]);
+    }
+
+    if (!selected.length) {
+      status('Enable the camera preview or choose a screen first.');
+      return;
+    }
+
+    try {
+      sharing = true;
+      $('startShare').disabled = true;
+      $('stopShare').disabled = false;
+
+      for (const [media, stream] of selected) {
+        const pc = pcFor(media);
+
+        for (const track of stream.getTracks()) {
+          pc.addTrack(track, stream);
+        }
+
+        const offer = await pc.createOffer();
+
+        await pc.setLocalDescription(offer);
+
+        await sendSignal('offer', {
+          media,
+          description: pc.localDescription.toJSON()
+        });
+      }
+
+      status(
+        'Sharing selected media with the approved support session.'
+      );
+    } catch (e) {
+      status('Could not start sharing: ' + e.message);
+
+      sharing = false;
+      $('startShare').disabled = false;
+      $('stopShare').disabled = true;
+    }
+  }
+
+  async function processSignals() {
+    if (!supportId || !token || !approved) return;
+
+    try {
+      const d = await api(
+        '/api/support/signals?id=' +
+        encodeURIComponent(supportId),
+        { headers: authHeaders() }
+      );
+
+      for (const s of d.signals || []) {
+        if (signalSeen.has(s.id)) continue;
+
+        signalSeen.add(s.id);
+
+        if (s.sender !== 'admin') continue;
+
+        const p = s.payload || {};
+        const media = p.media;
+
+        if (!['camera', 'screen'].includes(media)) continue;
+
+        const pc = pcFor(media);
+
+        if (s.signalType === 'answer' && p.description) {
+          if (!pc.currentRemoteDescription) {
+            await pc.setRemoteDescription(p.description);
+          }
+        }
+
+        if (s.signalType === 'ice-candidate' && p.candidate) {
+          try {
+            await pc.addIceCandidate(p.candidate);
+          } catch {
+            // A candidate may arrive before the answer is applied.
+          }
+        }
+      }
+    } catch (e) {
+      status('Signalling error: ' + e.message);
+    }
+  }
+
+  function startSignalPolling() {
+    if (signalTimer) return;
+
+    signalTimer = setInterval(processSignals, 1000);
+    processSignals();
+  }
+
+  function stopStream(stream) {
+    if (stream) {
+      for (const track of stream.getTracks()) {
+        track.stop();
+      }
+    }
+  }
+
+  function stopAllMedia() {
+    stopStream(cameraStream);
+    stopStream(screenStream);
+
+    cameraStream = null;
+    screenStream = null;
+
+    $('cameraVideo').srcObject = null;
+    $('screenVideo').srcObject = null;
+
+    for (const pc of Object.values(pcs)) {
+      try {
+        pc.close();
+      } catch {}
+    }
+
+    pcs = {};
+    sharing = false;
+
+    $('startShare').disabled = true;
+    $('stopShare').disabled = true;
+  }
+
+  async function stopSharing() {
+    stopAllMedia();
+
+    status(
+      'Media sharing stopped. The approved support session remains ' +
+      'open until you end it or it expires.'
+    );
+  }
+
+  async function endSupport() {
+    try {
+      if (supportId && token) {
+        await api('/api/support/end', {
+          method: 'POST',
+          headers: authHeaders(),
+          body: JSON.stringify({ supportId })
+        });
+      }
+    } catch {}
+
+    stopAllMedia();
+    clearSupport();
+    approved = false;
+    showMedia();
+
+    status('Support session ended.');
+  }
+
+  function clearSupport() {
+    supportId = '';
+    token = '';
+    approved = false;
+    sharing = false;
+
+    signalSeen.clear();
+
+    sessionStorage.removeItem(SUPPORT_KEY);
+
+    $('requestActions').hidden = true;
+    showMedia();
+
+    if (signalTimer) clearInterval(signalTimer);
+
+    signalTimer = null;
+
+    stopAllMedia();
+  }
+
+  $('approve').addEventListener('click', () => {
+    decision('approved');
+  });
+
+  $('deny').addEventListener('click', () => {
+    decision('denied');
+  });
+
+  $('cameraPreview').addEventListener('click', async () => {
+    try {
+      stopStream(cameraStream);
+
+      cameraStream = await navigator.mediaDevices.getUserMedia({
+        video: true,
+        audio: false
+      });
+
+      $('cameraVideo').srcObject = cameraStream;
+      $('startShare').disabled = false;
+
+      status(
+        'Camera preview is local. Press Start sharing to send it ' +
+        'to the support operator.'
+      );
+    } catch (e) {
+      status('Camera permission was not granted: ' + e.message);
+    }
+  });
+
+  $('screenPreview').addEventListener('click', async () => {
+    try {
+      stopStream(screenStream);
+
+      screenStream = await navigator.mediaDevices.getDisplayMedia({
+        video: true,
+        audio: false
+      });
+
+      $('screenVideo').srcObject = screenStream;
+
+      for (const track of screenStream.getTracks()) {
+        track.addEventListener('ended', () => {
+          screenStream = null;
+          $('screenVideo').srcObject = null;
+
+          if (!cameraStream) {
+            $('startShare').disabled = true;
+          }
+        });
+      }
+
+      $('startShare').disabled = false;
+
+      status(
+        'Screen preview is local. Press Start sharing to send it ' +
+        'to the support operator.'
+      );
+    } catch (e) {
+      status(
+        'Screen sharing was cancelled or denied: ' + e.message
+      );
+    }
+  });
+
+  $('startShare').addEventListener('click', startSharing);
+  $('stopShare').addEventListener('click', stopSharing);
+  $('endSupport').addEventListener('click', endSupport);
+
+  const saved = stored();
+
+  if (saved.supportId && saved.token) {
+    supportId = saved.supportId;
+    token = saved.token;
+  }
+
+  pollPending();
+
+  statusTimer = setInterval(()d => {
+    pollPending();
+  }, 2000);
+
+  window.addEventListener('beforeunload', () => {
+    if (statusTimer) clearInterval(statusTimer);
+    if (signalTimer) clearInterval(signalTimer);
+
+    stopAllMedia();
+  });
+})();
+</script>
 </body>
 </html>

@@ -5,7 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Visitor Control Centre</title>
   <link rel="stylesheet" href="./styles.css">
-  <script defer src="./tracker.js"></script>
   <script defer src="./app.js"></script>
 </head>
 <body>
@@ -28,11 +27,13 @@
 
       <form id="loginForm">
         <label for="adminKey">Admin key</label>
-        <input id="adminKey" type="password"
-               autocomplete="current-password" required>
-        <button class="button primary" type="submit">
-          Sign in
-        </button>
+        <input
+          id="adminKey"
+          type="password"
+          autocomplete="current-password"
+          required
+        >
+        <button class="button primary" type="submit">Sign in</button>
         <p id="loginError" class="error"></p>
       </form>
     </section>
@@ -42,8 +43,11 @@
         <div>
           <p class="eyebrow">OVERVIEW</p>
           <h1>Live activity</h1>
-          <p class="muted">Activity reported by consenting website visitors.</p>
+          <p class="muted">
+            Activity reported by consenting website visitors.
+          </p>
         </div>
+
         <div class="actions">
           <button id="refreshBtn" class="button secondary">Refresh</button>
           <button id="logoutBtn" class="button secondary">Lock</button>
@@ -56,16 +60,19 @@
           <strong id="onlineCount">0</strong>
           <small>Active within 2 minutes</small>
         </article>
+
         <article class="panel stat">
           <span>Page views</span>
           <strong id="pageViews">0</strong>
           <small>Recorded page visits</small>
         </article>
+
         <article class="panel stat">
           <span>Sessions</span>
           <strong id="sessionCount">0</strong>
           <small>Known browser sessions</small>
         </article>
+
         <article class="panel stat">
           <span>Events</span>
           <strong id="eventCount">0</strong>
@@ -77,7 +84,9 @@
         <div class="section-heading">
           <div>
             <h2>Visitor sessions</h2>
-            <p class="muted">Select a session to inspect its activity.</p>
+            <p class="muted">
+              Select a session to inspect activity or request support.
+            </p>
           </div>
           <small id="updated" class="muted"></small>
         </div>
@@ -88,13 +97,17 @@
               <tr>
                 <th>Session</th>
                 <th>Current page</th>
+                <th>Platform</th>
+                <th>Screen</th>
+                <th>Language</th>
                 <th>Last seen</th>
                 <th>Views</th>
                 <th>Status</th>
+                <th>Support</th>
               </tr>
             </thead>
             <tbody id="sessionsBody">
-              <tr><td colspan="5">No data loaded.</td></tr>
+              <tr><td colspan="9">No data loaded.</td></tr>
             </tbody>
           </table>
         </div>
@@ -102,7 +115,9 @@
 
       <section class="panel section">
         <h2>Session timeline</h2>
-        <p id="selectedSessionLabel" class="muted">Select a session above.</p>
+        <p id="selectedSessionLabel" class="muted">
+          Select a session above.
+        </p>
         <div id="timeline" class="timeline">
           <p class="muted">No session selected.</p>
         </div>
@@ -116,27 +131,48 @@
         </div>
       </section>
 
+      <section class="panel section">
+        <h2>Remote support</h2>
+        <p id="supportStatus" class="muted">
+          Choose a visitor session and request support.
+          The visitor must approve before any media can be shared.
+        </p>
+
+        <div class="actions">
+          <button
+            id="endSupportBtn"
+            class="button secondary"
+            disabled
+          >
+            End support session
+          </button>
+        </div>
+
+        <div class="support-videos">
+          <div>
+            <strong>Visitor camera</strong>
+            <video id="remoteCamera" autoplay playsinline controls></video>
+          </div>
+
+          <div>
+            <strong>Visitor screen</strong>
+            <video id="remoteScreen" autoplay playsinline controls></video>
+          </div>
+        </div>
+
+        <p class="footnote">
+          Viewing only. No remote keyboard/mouse control is enabled.
+          Video travels directly between browsers through WebRTC;
+          this Worker exchanges connection messages only.
+        </p>
+      </section>
+
       <p class="footnote">
-        Only activity on your website is recorded. The tracker does not
-        capture passwords, form contents, keystrokes, screen contents or
-        activity in other applications.
+        Only activity on your website is recorded.
+        Keyboard analytics should record interaction counts only,
+        never key values or typed text.
       </p>
     </section>
   </main>
-
-  <aside id="consentBanner" class="consent" hidden>
-    <div>
-      <strong>Website activity tracking</strong>
-      <p>
-        With your permission, this website records page visits and clicks
-        on selected elements to help the site owner understand website use.
-        No form values are collected.
-      </p>
-    </div>
-    <div class="consent-actions">
-      <button id="rejectTracking" class="button secondary">Reject</button>
-      <button id="acceptTracking" class="button primary">Allow</button>
-    </div>
-  </aside>
 </body>
 </html>
